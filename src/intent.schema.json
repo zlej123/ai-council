@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "properties": {
+    "decision": {
+      "type": "string",
+      "enum": ["PASS", "REQUEST_FLOOR"]
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "required": ["decision", "reason"],
+  "additionalProperties": false
+}
+
