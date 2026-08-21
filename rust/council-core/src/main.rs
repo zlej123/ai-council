@@ -1,9 +1,12 @@
 use std::error::Error;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use council_core::providers::{
     AnthropicAdapter, ClaudeCliAdapter, CodexCliAdapter, MockAdapter, OpenAiAdapter,
 };
+use council_core::transcript::{barrier_line, render_session_markdown};
 use council_core::{AgentAdapter, AgentId, Council, CycleOutcome};
 use tokio::io::{self, AsyncBufReadExt, BufReader};
 
@@ -19,6 +22,31 @@ struct Options {
     max_ai_streak: u64,
     once: Option<String>,
     check_providers: bool,
+    transcript: Option<PathBuf>,
+    no_transcript: bool,
+}
+
+impl Options {
+    fn provider_label(&self) -> &'static str {
+        match self.provider {
+            ProviderMode::Mock => "mock",
+            ProviderMode::Subscription => "ChatGPT + Claude subscription CLIs",
+            ProviderMode::Live => "live GPT + Claude",
+        }
+    }
+
+    fn transcript_path(&self) -> Option<PathBuf> {
+        if self.no_transcript {
+            return None;
+        }
+        Some(self.transcript.clone().unwrap_or_else(|| {
+            let seconds = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_secs())
+                .unwrap_or(0);
+            PathBuf::from(format!("outputs/session-{seconds}.md"))
+        }))
+    }
 }
 
 #[tokio::main]
@@ -31,21 +59,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    if let Some(message) = options.once {
+    let transcript_path = options.transcript_path();
+    let mut cycles: Vec<CycleOutcome> = Vec::new();
+
+    if let Some(message) = options.once.clone() {
         let outcome = council.submit_human(message).await?;
         print_outcome(&outcome);
+        cycles.push(outcome);
         print_metrics(&council)?;
+        save_transcript(&options, &council, &cycles, transcript_path.as_deref(), true);
         return Ok(());
     }
 
     println!("Council Core Spike ready.");
     println!(
         "Provider: {} · max AI streak: {}",
-        match options.provider {
-            ProviderMode::Mock => "mock",
-            ProviderMode::Subscription => "ChatGPT + Claude subscription CLIs",
-            ProviderMode::Live => "live GPT + Claude",
-        },
+        options.provider_label(),
         options.max_ai_streak
     );
     println!("Type a message, or /help for experimental commands.\n");
@@ -82,14 +111,50 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
 
         match council.submit_human(input.to_owned()).await {
-            Ok(outcome) => print_outcome(&outcome),
+            Ok(outcome) => {
+                print_outcome(&outcome);
+                cycles.push(outcome);
+                save_transcript(&options, &council, &cycles, transcript_path.as_deref(), false);
+            }
             Err(error) => eprintln!("Council stopped before granting the floor: {error}"),
         }
     }
 
     println!("\nFinal in-memory metrics:");
     print_metrics(&council)?;
+    save_transcript(&options, &council, &cycles, transcript_path.as_deref(), true);
     Ok(())
+}
+
+fn save_transcript(
+    options: &Options,
+    council: &Council,
+    cycles: &[CycleOutcome],
+    path: Option<&std::path::Path>,
+    announce: bool,
+) {
+    let Some(path) = path else {
+        return;
+    };
+    if cycles.is_empty() {
+        return;
+    }
+    let markdown = render_session_markdown(
+        options.provider_label(),
+        &council.room().snapshot(),
+        cycles,
+        &council.metrics_report(),
+    );
+    let written = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::write(path, markdown));
+    match written {
+        Ok(()) if announce => println!("Transcript saved to {}", path.display()),
+        Ok(()) => {}
+        Err(error) => eprintln!("Failed to save transcript to {}: {error}", path.display()),
+    }
 }
 
 fn parse_options() -> Result<Options, Box<dyn Error>> {
@@ -97,6 +162,8 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
     let mut max_ai_streak = 3;
     let mut once = None;
     let mut check_providers = false;
+    let mut transcript = None;
+    let mut no_transcript = false;
     let mut arguments = std::env::args().skip(1);
 
     while let Some(argument) = arguments.next() {
@@ -122,9 +189,15 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
                 once = Some(arguments.next().ok_or("--once needs a message")?);
             }
             "--check-providers" => check_providers = true,
+            "--transcript" => {
+                transcript = Some(PathBuf::from(
+                    arguments.next().ok_or("--transcript needs a file path")?,
+                ));
+            }
+            "--no-transcript" => no_transcript = true,
             "--help" | "-h" => {
                 println!(
-                    "Usage: council-core [--provider mock|subscription|live] [--max-ai-streak N] [--once MESSAGE] [--check-providers]"
+                    "Usage: council-core [--provider mock|subscription|live] [--max-ai-streak N] [--once MESSAGE] [--check-providers] [--transcript PATH] [--no-transcript]"
                 );
                 std::process::exit(0);
             }
@@ -137,6 +210,8 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
         max_ai_streak,
         once,
         check_providers,
+        transcript,
+        no_transcript,
     })
 }
 
@@ -166,20 +241,7 @@ fn print_outcome(outcome: &CycleOutcome) {
     }
     println!("\n[control]");
     for barrier in &outcome.barriers {
-        let details = barrier
-            .dispositions
-            .iter()
-            .map(|(agent, disposition)| format!("{agent}={disposition:?}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let floor = barrier
-            .floor_granted
-            .map(|agent| agent.to_string())
-            .unwrap_or_else(|| "none".to_owned());
-        println!(
-            "event #{}: {} · floor={} ",
-            barrier.event_id, details, floor
-        );
+        println!("{}", barrier_line(barrier));
     }
     println!("stop={}", outcome.stop_reason);
 }

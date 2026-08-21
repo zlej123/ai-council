@@ -4,6 +4,7 @@ pub mod metrics;
 pub mod model;
 pub mod prompts;
 pub mod providers;
+pub mod transcript;
 
 pub use adapter::{AgentAdapter, CouncilError, CouncilResult};
 pub use engine::{Council, CycleOutcome, StopReason};

@@ -24,6 +24,8 @@ cargo run --manifest-path rust/Cargo.toml -p council-core
 
 명령은 `/metrics`, `/state`, `/rate 1..5 선택적 메모`, `/quit`이다. PASS는 공개 `RoomEvent`가 아니므로 대화 본문에는 나타나지 않고 `[control]` trace에서만 확인된다.
 
+세션이 하나 이상의 발언을 만들면 종료 시 transcript(이벤트 전문 + control trace + 지표)가 `outputs/session-<unix>.md`로 저장된다. EXPERIMENT.md §6의 10개 주제 사람 검토가 이 파일을 근거로 한다. `--transcript PATH`로 경로를 바꾸고 `--no-transcript`로 끈다.
+
 ## 구독으로 실제 모델 실행
 
 로컬 Codex CLI가 ChatGPT 구독으로, Claude Code CLI가 claude.ai 구독으로 로그인되어 있다면 별도의 API 키 없이 실행할 수 있다.
@@ -116,4 +118,17 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-테스트는 두 adapter의 병렬 barrier 도달, losing intent 폐기와 재판단, round-robin, provider 실패 시 fail-closed, 마지막 AI event 처리, 지표 계산을 검증한다. 이 테스트는 orchestration의 증거이지 자연스러운 실제 대화의 증거가 아니다. 실제 품질 판단에는 서로 다른 주제의 live 세션과 사람의 `/rate` 평가가 필요하다.
+테스트는 두 adapter의 병렬 barrier 도달, losing intent 폐기와 재판단, round-robin, provider 실패 시 fail-closed, 마지막 AI event 처리, 지표 계산, transcript 렌더링을 검증한다. 이 테스트는 orchestration의 증거이지 자연스러운 실제 대화의 증거가 아니다. 실제 품질 판단에는 서로 다른 주제의 live 세션과 사람의 `/rate` 평가가 필요하다.
+
+## 검증 현황 (2026-08-21)
+
+| 항목 | 상태 |
+| --- | --- |
+| fmt / clippy(-D warnings) / 테스트 9개 | 통과 |
+| mock 전체 루프 + transcript 저장 | 통과 |
+| 구독 인증 사전점검 (`--check-providers`) | 통과 |
+| GPT 구독 adapter 실제 판단 | 2026-08-21 Codex 세션에서 통과 |
+| Claude 구독 adapter evaluate/speak | 2026-08-21 실제 CLI 호출로 통과 (`structured_output` 판단 + 자연어 발언 확인) |
+| barrier fail-closed (실제 provider 오류) | 통과 — GPT 한도 초과 시 발언권 미부여 확인 |
+| GPT+Claude 실제 3자 세션 | **대기** — ChatGPT 구독 사용량 한도, 2026-08-27 17:08 재설정 후 실행 |
+| 대화 품질 acceptance (주제 10개 + `/rate`) | **대기** — 위 세션 재개 후 진행 |

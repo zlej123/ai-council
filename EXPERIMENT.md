@@ -63,3 +63,5 @@
 - **자연스러운 단체대화 체감** = 사용자가 `/rate 1..5 선택적 메모`로 기록한 평균과 원문. 자동 품질 점수로 대체하지 않는다.
 
 프로토콜 acceptance는 단위/통합 테스트로 barrier, stale-intent 폐기, round-robin, fail-closed, 지표를 증명한다. 대화 품질 acceptance는 서로 다른 실제 주제 최소 10개를 사람이 읽고, 자연스러움 평균·PASS율·동시 REQUEST율·streak 분포를 함께 검토한 뒤 결정한다. 테스트 통과는 자연스러운 대화의 증거가 아니다.
+
+사람 검토를 위해 각 세션은 종료 시 `outputs/session-<unix>.md`로 export된다(`--transcript PATH`로 경로 지정, `--no-transcript`로 비활성). 이 파일은 검토용 사본일 뿐이며 in-memory `Room.event_log`가 유일한 source of truth라는 원칙은 유지된다.

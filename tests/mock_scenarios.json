@@ -1,9 +1,0 @@
-[
-  {
-    "name": "simultaneous request then re-evaluation",
-    "human": "AI 여러 명이 실제 대화하면 어떤 가치가 있을까?",
-    "expected_ai_authors": ["GPT", "Claude"],
-    "expected_stop": "QUIESCENT"
-  }
-]
-
