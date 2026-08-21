@@ -67,7 +67,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         print_outcome(&outcome);
         cycles.push(outcome);
         print_metrics(&council)?;
-        save_transcript(&options, &council, &cycles, transcript_path.as_deref(), true);
+        save_transcript(
+            &options,
+            &council,
+            &cycles,
+            transcript_path.as_deref(),
+            true,
+        );
         return Ok(());
     }
 
@@ -114,7 +120,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Ok(outcome) => {
                 print_outcome(&outcome);
                 cycles.push(outcome);
-                save_transcript(&options, &council, &cycles, transcript_path.as_deref(), false);
+                save_transcript(
+                    &options,
+                    &council,
+                    &cycles,
+                    transcript_path.as_deref(),
+                    false,
+                );
             }
             Err(error) => eprintln!("Council stopped before granting the floor: {error}"),
         }
@@ -122,7 +134,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("\nFinal in-memory metrics:");
     print_metrics(&council)?;
-    save_transcript(&options, &council, &cycles, transcript_path.as_deref(), true);
+    save_transcript(
+        &options,
+        &council,
+        &cycles,
+        transcript_path.as_deref(),
+        true,
+    );
     Ok(())
 }
 

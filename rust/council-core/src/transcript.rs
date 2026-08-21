@@ -33,7 +33,10 @@ pub fn render_session_markdown(
 
     out.push_str("\n## Events\n\n");
     for event in &room.events {
-        out.push_str(&format!("**#{} {}**\n{}\n\n", event.id, event.author, event.content));
+        out.push_str(&format!(
+            "**#{} {}**\n{}\n\n",
+            event.id, event.author, event.content
+        ));
     }
 
     out.push_str("## Control trace\n\n```text\n");
@@ -42,7 +45,11 @@ pub fn render_session_markdown(
             out.push_str(&barrier_line(barrier));
             out.push('\n');
         }
-        out.push_str(&format!("cycle {}: stop={}\n", index + 1, cycle.stop_reason));
+        out.push_str(&format!(
+            "cycle {}: stop={}\n",
+            index + 1,
+            cycle.stop_reason
+        ));
     }
     out.push_str("```\n");
 
