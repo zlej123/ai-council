@@ -8,10 +8,14 @@ use axum::http::StatusCode;
 use axum::response::Html;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use council_core::providers::{ProviderKind, build_adapters};
+use council_core::providers::{
+    AgentSpec, ProviderKind, UsageSample, build_adapters_with, check_subscription,
+};
 use council_core::transcript::{barrier_line, render_session_markdown};
 use council_core::{AgentId, Council, CycleOutcome};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
 use tokio::sync::{RwLock, mpsc};
 
 const INDEX_HTML: &str = include_str!("../../web/index.html");
@@ -29,6 +33,14 @@ struct UiCycle {
     stop: String,
 }
 
+#[derive(Clone, Default, Serialize)]
+struct UsageTotals {
+    calls: u64,
+    input_tokens: u64,
+    output_tokens: u64,
+    cost_usd: f64,
+}
+
 #[derive(Clone, Serialize)]
 struct UiState {
     provider: String,
@@ -39,11 +51,17 @@ struct UiState {
     busy: bool,
     last_error: Option<String>,
     transcript: String,
+    usage: BTreeMap<String, UsageTotals>,
+    max_ai_streak: u64,
 }
 
 enum Command {
     Message(String),
     Rate(u8, Option<String>),
+    Reset {
+        seats: Vec<AgentSpec>,
+        max_ai_streak: u64,
+    },
 }
 
 struct App {
@@ -62,20 +80,48 @@ struct RateBody {
     note: Option<String>,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let (provider, agents, max_ai_streak, port) = parse_options()?;
-    let mut council = Council::new(build_adapters(provider, &agents)?, max_ai_streak)?;
+#[derive(Deserialize)]
+struct SeatBody {
+    agent: String,
+    model: Option<String>,
+    effort: Option<String>,
+}
 
+#[derive(Deserialize)]
+struct SessionBody {
+    seats: Vec<SeatBody>,
+    max_ai_streak: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct ProviderStatus {
+    agent: String,
+    ok: bool,
+    error: Option<String>,
+}
+
+fn transcript_file() -> PathBuf {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0);
+    PathBuf::from(format!("web-session-{seconds}.md"))
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let (provider, agents, max_ai_streak, port) = parse_options()?;
+    let (usage_tx, mut usage_rx) = mpsc::unbounded_channel::<UsageSample>();
+    let seats: Vec<AgentSpec> = agents.iter().copied().map(AgentSpec::defaults).collect();
+    let mut council = Council::new(
+        build_adapters_with(provider, &seats, Some(&usage_tx))?,
+        max_ai_streak,
+    )?;
+
     let outputs_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../outputs");
     std::fs::create_dir_all(&outputs_dir)?;
-    let transcript_path = outputs_dir
-        .canonicalize()?
-        .join(format!("web-session-{seconds}.md"));
+    let outputs_dir = outputs_dir.canonicalize()?;
+    let mut transcript_path = outputs_dir.join(transcript_file());
 
     let ui = UiState {
         provider: provider.label().to_owned(),
@@ -86,6 +132,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         busy: false,
         last_error: None,
         transcript: transcript_path.display().to_string(),
+        usage: BTreeMap::new(),
+        max_ai_streak,
     };
 
     let (command_tx, mut command_rx) = mpsc::channel::<Command>(16);
@@ -97,7 +145,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Committed events stream into the UI state as they happen, so the page
     // shows each speech mid-cycle instead of waiting for the whole cycle.
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-    council.set_event_sink(event_tx);
+    council.set_event_sink(event_tx.clone());
     let event_app = Arc::clone(&app);
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
@@ -109,12 +157,53 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
+    // Per-seat session usage totals, observed from each CLI response.
+    let usage_app = Arc::clone(&app);
+    tokio::spawn(async move {
+        while let Some(sample) = usage_rx.recv().await {
+            let mut ui = usage_app.ui.write().await;
+            let totals = ui.usage.entry(sample.agent.to_string()).or_default();
+            totals.calls += 1;
+            totals.input_tokens += sample.input_tokens;
+            totals.output_tokens += sample.output_tokens;
+            totals.cost_usd += sample.cost_usd;
+        }
+    });
+
     let council_app = Arc::clone(&app);
     let provider_label = provider.label();
     tokio::spawn(async move {
         let mut cycles: Vec<CycleOutcome> = Vec::new();
         while let Some(command) = command_rx.recv().await {
             match command {
+                Command::Reset {
+                    seats,
+                    max_ai_streak,
+                } => {
+                    let rebuilt = build_adapters_with(provider, &seats, Some(&usage_tx))
+                        .and_then(|adapters| Council::new(adapters, max_ai_streak));
+                    let mut ui = council_app.ui.write().await;
+                    match rebuilt {
+                        Ok(mut next) => {
+                            next.set_event_sink(event_tx.clone());
+                            council = next;
+                            cycles.clear();
+                            transcript_path = outputs_dir.join(transcript_file());
+                            ui.roster = council.roster().iter().map(ToString::to_string).collect();
+                            ui.events.clear();
+                            ui.cycles.clear();
+                            ui.usage.clear();
+                            ui.metrics = serde_json::to_value(council.metrics_report())
+                                .unwrap_or(serde_json::Value::Null);
+                            ui.transcript = transcript_path.display().to_string();
+                            ui.max_ai_streak = max_ai_streak;
+                            ui.last_error = None;
+                        }
+                        Err(error) => ui.last_error = Some(error.to_string()),
+                    }
+                    ui.busy = false;
+                    continue;
+                }
                 Command::Message(text) => {
                     let result = council.submit_human(text).await;
                     let mut ui = council_app.ui.write().await;
@@ -166,6 +255,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .route("/api/state", get(get_state))
         .route("/api/message", post(post_message))
         .route("/api/rate", post(post_rate))
+        .route("/api/providers", get(get_providers))
+        .route("/api/session", post(post_session))
         .with_state(app);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
@@ -213,6 +304,77 @@ async fn post_rate(
 ) -> Result<StatusCode, (StatusCode, String)> {
     app.commands
         .send(Command::Rate(body.score, body.note))
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "council task stopped".to_owned(),
+            )
+        })?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+async fn get_providers() -> Json<Vec<ProviderStatus>> {
+    let checks = AgentId::ORDER.map(|agent| {
+        tokio::task::spawn_blocking(move || match check_subscription(agent) {
+            Ok(()) => ProviderStatus {
+                agent: agent.to_string(),
+                ok: true,
+                error: None,
+            },
+            Err(error) => ProviderStatus {
+                agent: agent.to_string(),
+                ok: false,
+                error: Some(error.to_string()),
+            },
+        })
+    });
+    let mut statuses = Vec::new();
+    for check in checks {
+        if let Ok(status) = check.await {
+            statuses.push(status);
+        }
+    }
+    Json(statuses)
+}
+
+async fn post_session(
+    State(app): State<Arc<App>>,
+    Json(body): Json<SessionBody>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let mut seats = Vec::new();
+    for seat in body.seats {
+        let agent = AgentId::parse(&seat.agent).ok_or((
+            StatusCode::BAD_REQUEST,
+            format!("unknown agent: {}", seat.agent),
+        ))?;
+        seats.push(AgentSpec {
+            agent,
+            model: seat.model.filter(|value| !value.trim().is_empty()),
+            effort: seat.effort.filter(|value| !value.trim().is_empty()),
+        });
+    }
+    if seats.len() < 2 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "a council needs at least two AI participants".to_owned(),
+        ));
+    }
+    {
+        let mut ui = app.ui.write().await;
+        if ui.busy {
+            return Err((
+                StatusCode::CONFLICT,
+                "the council is still deliberating".to_owned(),
+            ));
+        }
+        ui.busy = true;
+    }
+    app.commands
+        .send(Command::Reset {
+            seats,
+            max_ai_streak: body.max_ai_streak.unwrap_or(3),
+        })
         .await
         .map_err(|_| {
             (

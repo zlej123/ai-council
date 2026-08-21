@@ -38,6 +38,26 @@
   #ratebar button { background: var(--panel); border: 1px solid var(--line); color: var(--text); padding: 3px 11px; border-radius: 8px; }
   #ratebar button.sel { background: #2b4c7e; border-color: #2b4c7e; }
   #metrics { color: var(--dim); font-size: 12px; }
+  #gear { margin-left: auto; background: var(--panel); border: 1px solid var(--line); padding: 4px 12px; border-radius: 8px; }
+  #settings { display: none; position: fixed; top: 0; right: 0; bottom: 0; width: 360px; max-width: 92vw;
+              background: var(--panel); border-left: 1px solid var(--line); padding: 16px; overflow-y: auto; z-index: 10; }
+  #settings.open { display: block; }
+  #settings h2 { font-size: 14px; margin-bottom: 10px; }
+  .seat { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+  .seat .top { display: flex; align-items: center; gap: 8px; }
+  .seat .dot { width: 8px; height: 8px; border-radius: 50%; background: #555; flex: none; }
+  .seat .dot.ok { background: #34c759; } .seat .dot.bad { background: #e0524d; }
+  .seat .hint { font-size: 11.5px; color: var(--dim); margin-top: 4px; }
+  .seat .row { display: flex; gap: 6px; margin-top: 7px; }
+  .seat input[type=text], .seat select { flex: 1; background: var(--bg); border: 1px solid var(--line);
+       color: var(--text); border-radius: 7px; padding: 5px 8px; font-size: 12.5px; min-width: 0; }
+  #settings .opts { display: flex; align-items: center; gap: 8px; margin: 12px 0; font-size: 13px; color: var(--dim); }
+  #settings .opts input { width: 56px; background: var(--bg); border: 1px solid var(--line); color: var(--text);
+       border-radius: 7px; padding: 5px 8px; }
+  #usage { width: 100%; border-collapse: collapse; font-size: 11.5px; color: var(--dim); margin: 6px 0 14px; }
+  #usage td, #usage th { border-top: 1px solid var(--line); padding: 4px 6px; text-align: right; }
+  #usage th:first-child, #usage td:first-child { text-align: left; }
+  #apply { width: 100%; padding: 10px; }
 </style>
 </head>
 <body>
@@ -45,7 +65,17 @@
   <h1>AI Council</h1>
   <span class="meta" id="who"></span>
   <span class="meta" id="file"></span>
+  <button id="gear">설정</button>
 </header>
+<aside id="settings">
+  <h2>참가자 구성</h2>
+  <div id="seats"></div>
+  <div class="opts">AI 연속발언 상한 <input id="streak" type="number" min="1" max="10" value="3"></div>
+  <h2>이번 세션 사용량</h2>
+  <table id="usage"><thead><tr><th>AI</th><th>호출</th><th>입력</th><th>출력</th><th>비용$</th></tr></thead><tbody></tbody></table>
+  <div class="seat hint" style="border:0;padding:0 0 10px">잔여 한도는 CLI가 노출하지 않아 표시하지 못한다. 한도 초과 시 대화가 fail-closed로 멈추고 오류에 재설정 시각이 표시된다. 로그인은 터미널에서: codex login · claude /login · grok login · Antigravity 앱 로그인</div>
+  <button id="apply">새 세션 시작</button>
+</aside>
 <div id="log"></div>
 <div id="error"></div>
 <footer>
@@ -64,14 +94,84 @@
 <script>
 const log = document.getElementById('log'), text = document.getElementById('text'),
       send = document.getElementById('send'), busy = document.getElementById('busy'),
-      errBox = document.getElementById('error');
+      errBox = document.getElementById('error'), settings = document.getElementById('settings');
 let lastCount = -1, lastCycles = -1, wasBusy = false;
+
+const SEATS = [
+  { id: 'gpt',    name: 'GPT',    models: ['gpt-5.3-codex', 'gpt-5.4'], hint: 'Codex CLI · ChatGPT 구독' },
+  { id: 'claude', name: 'Claude', models: ['sonnet', 'opus', 'haiku'], hint: 'Claude Code CLI · claude.ai 구독', noEffort: true },
+  { id: 'gemini', name: 'Gemini', models: ['gemini-3.7-flash-high', 'gemini-3.1-pro-high', 'gemini-3.1-pro-low'], hint: 'Antigravity CLI · Google 계정' },
+  { id: 'grok',   name: 'Grok',   models: ['grok-4.6', 'grok-4.5'], hint: 'Grok CLI · grok.com 구독' },
+];
+
+function buildSeats(roster) {
+  const box = document.getElementById('seats');
+  box.innerHTML = '';
+  for (const seat of SEATS) {
+    const card = document.createElement('div'); card.className = 'seat'; card.id = 'seat-' + seat.id;
+    const active = roster.includes(seat.name);
+    card.innerHTML =
+      '<div class="top"><span class="dot"></span>' +
+      '<label style="display:flex;gap:6px;align-items:center;flex:1">' +
+      '<input type="checkbox" class="join"' + (active ? ' checked' : '') + '> <b class="who ' + seat.name + '">' + seat.name + '</b></label>' +
+      '<span class="hint status-text"></span></div>' +
+      '<div class="hint">' + seat.hint + '</div>' +
+      '<div class="row"><input type="text" class="model" list="models-' + seat.id + '" placeholder="모델 (비우면 기본값)">' +
+      '<datalist id="models-' + seat.id + '">' + seat.models.map(m => '<option value="' + m + '">').join('') + '</datalist>' +
+      '<select class="effort"' + (seat.noEffort ? ' disabled' : '') + '><option value="">effort 기본</option>' +
+      '<option>low</option><option>medium</option><option>high</option></select></div>';
+    box.append(card);
+  }
+}
+
+async function refreshProviders() {
+  try {
+    const statuses = await (await fetch('/api/providers')).json();
+    for (const st of statuses) {
+      const seat = SEATS.find(x => x.name === st.agent); if (!seat) continue;
+      const card = document.getElementById('seat-' + seat.id); if (!card) continue;
+      card.querySelector('.dot').className = 'dot ' + (st.ok ? 'ok' : 'bad');
+      card.querySelector('.status-text').textContent = st.ok ? '로그인됨' : '미인증';
+      const join = card.querySelector('.join');
+      if (!st.ok) { join.checked = false; join.disabled = true; card.title = st.error || ''; }
+      else { join.disabled = false; }
+    }
+  } catch (_) {}
+}
+
+document.getElementById('gear').onclick = () => {
+  settings.classList.toggle('open');
+  if (settings.classList.contains('open')) refreshProviders();
+};
+
+document.getElementById('apply').onclick = async () => {
+  const seats = [];
+  for (const seat of SEATS) {
+    const card = document.getElementById('seat-' + seat.id);
+    if (!card.querySelector('.join').checked) continue;
+    seats.push({ agent: seat.id, model: card.querySelector('.model').value.trim() || null,
+                 effort: card.querySelector('.effort').value || null });
+  }
+  if (seats.length < 2) { alert('AI를 2명 이상 선택하세요.'); return; }
+  if (lastCount > 0 && !confirm('현재 대화를 버리고 새 세션을 시작할까요? (transcript는 저장되어 있음)')) return;
+  const res = await fetch('/api/session', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ seats, max_ai_streak: +document.getElementById('streak').value || 3 }) });
+  if (!res.ok) { errBox.style.display = 'block'; errBox.textContent = await res.text(); return; }
+  settings.classList.remove('open');
+  lastCount = -1; refresh();
+};
 
 function pct(v) { return v == null ? '–' : Math.round(v * 100) + '%'; }
 
+let seatsBuilt = false;
 function render(s) {
   document.getElementById('who').textContent = s.roster.join(' · ') + ' — ' + s.provider;
   document.getElementById('file').textContent = s.transcript;
+  if (!seatsBuilt) { buildSeats(s.roster); seatsBuilt = true; }
+  const tbody = document.querySelector('#usage tbody');
+  tbody.innerHTML = Object.entries(s.usage || {}).map(([who, u]) =>
+    '<tr><td>' + who + '</td><td>' + u.calls + '</td><td>' + u.input_tokens.toLocaleString() +
+    '</td><td>' + u.output_tokens.toLocaleString() + '</td><td>' + u.cost_usd.toFixed(3) + '</td></tr>').join('');
   if (s.events.length !== lastCount || s.cycles.length !== lastCycles) {
     lastCount = s.events.length; lastCycles = s.cycles.length;
     log.innerHTML = '';

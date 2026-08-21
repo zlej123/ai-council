@@ -6,14 +6,27 @@ mod subscription;
 pub use anthropic::AnthropicAdapter;
 pub use mock::MockAdapter;
 pub use openai::OpenAiAdapter;
-pub use subscription::{AntigravityCliAdapter, ClaudeCliAdapter, CodexCliAdapter, GrokCliAdapter};
+pub use subscription::{
+    AntigravityCliAdapter, ClaudeCliAdapter, CodexCliAdapter, GrokCliAdapter, check_subscription,
+};
 
 use std::sync::Arc;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::adapter::{AgentAdapter, CouncilError, CouncilResult};
 use crate::model::{AgentId, Decision, Intent};
+
+/// Tokens and cost one CLI call reported, as observed from its JSON output.
+/// This is session-local observation — the CLIs do not expose remaining
+/// subscription quota headlessly.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct UsageSample {
+    pub agent: AgentId,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: f64,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProviderKind {
@@ -41,25 +54,71 @@ impl ProviderKind {
     }
 }
 
+/// One seat request: which agent joins, optionally pinned to a model/effort.
+/// `None` falls back to the seat's *_SUBSCRIPTION_MODEL / _EFFORT env vars.
+#[derive(Clone, Debug)]
+pub struct AgentSpec {
+    pub agent: AgentId,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+impl AgentSpec {
+    pub fn defaults(agent: AgentId) -> Self {
+        Self {
+            agent,
+            model: None,
+            effort: None,
+        }
+    }
+}
+
 pub fn build_adapters(
     kind: ProviderKind,
     agents: &[AgentId],
 ) -> CouncilResult<Vec<Arc<dyn AgentAdapter>>> {
+    let specs: Vec<AgentSpec> = agents.iter().copied().map(AgentSpec::defaults).collect();
+    build_adapters_with(kind, &specs, None)
+}
+
+pub fn build_adapters_with(
+    kind: ProviderKind,
+    specs: &[AgentSpec],
+    usage_sink: Option<&tokio::sync::mpsc::UnboundedSender<UsageSample>>,
+) -> CouncilResult<Vec<Arc<dyn AgentAdapter>>> {
     let mut adapters: Vec<Arc<dyn AgentAdapter>> = Vec::new();
-    for agent in agents {
-        let adapter: Arc<dyn AgentAdapter> = match (kind, agent) {
-            (ProviderKind::Mock, _) => Arc::new(MockAdapter::new(*agent)),
+    for spec in specs {
+        let model = spec.model.clone();
+        let effort = spec.effort.clone();
+        let adapter: Arc<dyn AgentAdapter> = match (kind, spec.agent) {
+            (ProviderKind::Mock, agent) => Arc::new(MockAdapter::new(agent)),
             (ProviderKind::Subscription, AgentId::Gpt) => {
-                Arc::new(CodexCliAdapter::subscription()?)
+                let mut adapter = CodexCliAdapter::with_config(model, effort)?;
+                if let Some(sink) = usage_sink {
+                    adapter.set_usage_sink(sink.clone());
+                }
+                Arc::new(adapter)
             }
             (ProviderKind::Subscription, AgentId::Claude) => {
-                Arc::new(ClaudeCliAdapter::subscription()?)
+                let mut adapter = ClaudeCliAdapter::with_config(model, effort)?;
+                if let Some(sink) = usage_sink {
+                    adapter.set_usage_sink(sink.clone());
+                }
+                Arc::new(adapter)
             }
             (ProviderKind::Subscription, AgentId::Gemini) => {
-                Arc::new(AntigravityCliAdapter::subscription()?)
+                let mut adapter = AntigravityCliAdapter::with_config(model, effort)?;
+                if let Some(sink) = usage_sink {
+                    adapter.set_usage_sink(sink.clone());
+                }
+                Arc::new(adapter)
             }
             (ProviderKind::Subscription, AgentId::Grok) => {
-                Arc::new(GrokCliAdapter::subscription()?)
+                let mut adapter = GrokCliAdapter::with_config(model, effort)?;
+                if let Some(sink) = usage_sink {
+                    adapter.set_usage_sink(sink.clone());
+                }
+                Arc::new(adapter)
             }
             (ProviderKind::Live, AgentId::Gpt) => Arc::new(OpenAiAdapter::from_env()?),
             (ProviderKind::Live, AgentId::Claude) => Arc::new(AnthropicAdapter::from_env()?),

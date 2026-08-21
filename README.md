@@ -142,6 +142,12 @@ cargo run --manifest-path rust/Cargo.toml -p council-core --bin council-web
 
 기본값은 `--provider subscription --agents claude,gemini,grok --port 8787`이고, http://127.0.0.1:8787 에서 채팅 버블·발언권 trace·지표·자연스러움 평점(1~5 버튼)을 제공한다. AI 발언은 커밋되는 즉시 화면에 나타나고, transcript는 `outputs/web-session-<unix>.md`로 자동 저장된다.
 
+설정 패널(우상단)에서:
+
+- **AI별 구독 인증 상태**를 검사해 표시한다 (모델 호출 없음). 로그인 자체는 각 CLI에서 한다.
+- **참가자·모델·effort**를 좌석별로 고르고 AI 연속발언 상한을 정한 뒤 **새 세션 시작**으로 적용한다 (이전 대화는 transcript로 남고 방은 초기화된다).
+- **이번 세션 사용량**(호출 수·입출력 토큰·CLI가 보고한 비용)을 AI별로 누적 표시한다. 잔여 구독 한도는 CLI들이 헤드리스로 노출하지 않으므로 표시하지 않는다 — 한도 초과는 fail-closed 오류로 드러나며 오류 문구에 재설정 시각이 담겨 온다.
+
 ## 검증 현황 (2026-08-21)
 
 | 항목 | 상태 |
