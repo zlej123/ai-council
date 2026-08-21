@@ -1,7 +1,7 @@
 # CLAUDE.md
 
-Council Core Spike — You + GPT + Claude 3자 대화에서 발언권 중재만으로 자연스러운
-단체대화가 되는지 검증하는 Rust 실험. 계약은 [EXPERIMENT.md](EXPERIMENT.md)에 고정되어
+AI Council — 사람 + 여러 AI(GPT/Claude/Gemini/Grok)가 발언권 중재만으로 자연스러운
+단체대화를 하는지 검증하고 실제로 활용하는 Rust 프로젝트. 계약은 [EXPERIMENT.md](EXPERIMENT.md)에 고정되어
 있고, 범위를 바꾸는 변경은 그 문서를 먼저 수정한 뒤에만 한다.
 
 ## 구조

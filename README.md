@@ -1,6 +1,6 @@
-# Council Core Spike
+# AI Council
 
-You + 여러 AI(GPT, Claude, Gemini, Grok 중 2~4)의 대화에서 다음 하나를 검증하는 실행 가능한 Rust 실험이다.
+사람 + 여러 AI(GPT, Claude, Gemini, Grok 중 2~4)가 한 방에서 대화하는 실험 프로젝트다. 핵심 spike는 다음 하나를 검증한다.
 
 > 모든 AI가 최신 Room Event를 처리한 뒤 스스로 `PASS` 또는 `REQUEST_FLOOR`를 정하고, 내용과 무관한 발언권 중재만으로 자연스러운 단체대화가 만들어지는가?
 

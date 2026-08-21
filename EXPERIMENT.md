@@ -1,4 +1,4 @@
-# Council Core Spike — 1페이지 실험 사양
+# AI Council — Core Spike 1페이지 실험 사양
 
 ## 1. 질문과 성공 조건
 
