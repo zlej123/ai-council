@@ -1,25 +1,14 @@
 use std::error::Error;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use council_core::providers::{
-    AnthropicAdapter, AntigravityCliAdapter, ClaudeCliAdapter, CodexCliAdapter, GrokCliAdapter,
-    MockAdapter, OpenAiAdapter,
-};
+use council_core::providers::{ProviderKind, build_adapters};
 use council_core::transcript::{barrier_line, render_session_markdown};
-use council_core::{AgentAdapter, AgentId, Council, CycleOutcome};
+use council_core::{AgentId, Council, CycleOutcome};
 use tokio::io::{self, AsyncBufReadExt, BufReader};
 
-#[derive(Clone, Copy)]
-enum ProviderMode {
-    Mock,
-    Subscription,
-    Live,
-}
-
 struct Options {
-    provider: ProviderMode,
+    provider: ProviderKind,
     agents: Vec<AgentId>,
     max_ai_streak: u64,
     once: Option<String>,
@@ -30,11 +19,7 @@ struct Options {
 
 impl Options {
     fn provider_label(&self) -> &'static str {
-        match self.provider {
-            ProviderMode::Mock => "mock",
-            ProviderMode::Subscription => "subscription CLIs",
-            ProviderMode::Live => "live APIs",
-        }
+        self.provider.label()
     }
 
     fn transcript_path(&self) -> Option<PathBuf> {
@@ -184,7 +169,7 @@ fn save_transcript(
 }
 
 fn parse_options() -> Result<Options, Box<dyn Error>> {
-    let mut provider = ProviderMode::Mock;
+    let mut provider = ProviderKind::Mock;
     let mut agents = vec![AgentId::Gpt, AgentId::Claude];
     let mut max_ai_streak = 3;
     let mut once = None;
@@ -199,12 +184,8 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
                 let value = arguments
                     .next()
                     .ok_or("--provider needs mock, subscription, or live")?;
-                provider = match value.as_str() {
-                    "mock" => ProviderMode::Mock,
-                    "subscription" => ProviderMode::Subscription,
-                    "live" => ProviderMode::Live,
-                    _ => return Err(format!("unknown provider mode: {value}").into()),
-                };
+                provider = ProviderKind::parse(&value)
+                    .ok_or_else(|| format!("unknown provider mode: {value}"))?;
             }
             "--agents" => {
                 let value = arguments
@@ -255,38 +236,11 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
 }
 
 fn build_council(
-    mode: ProviderMode,
+    mode: ProviderKind,
     agents: &[AgentId],
     max_ai_streak: u64,
 ) -> Result<Council, Box<dyn Error>> {
-    let mut adapters: Vec<Arc<dyn AgentAdapter>> = Vec::new();
-    for agent in agents {
-        let adapter: Arc<dyn AgentAdapter> = match (mode, agent) {
-            (ProviderMode::Mock, _) => Arc::new(MockAdapter::new(*agent)),
-            (ProviderMode::Subscription, AgentId::Gpt) => {
-                Arc::new(CodexCliAdapter::subscription()?)
-            }
-            (ProviderMode::Subscription, AgentId::Claude) => {
-                Arc::new(ClaudeCliAdapter::subscription()?)
-            }
-            (ProviderMode::Subscription, AgentId::Gemini) => {
-                Arc::new(AntigravityCliAdapter::subscription()?)
-            }
-            (ProviderMode::Subscription, AgentId::Grok) => {
-                Arc::new(GrokCliAdapter::subscription()?)
-            }
-            (ProviderMode::Live, AgentId::Gpt) => Arc::new(OpenAiAdapter::from_env()?),
-            (ProviderMode::Live, AgentId::Claude) => Arc::new(AnthropicAdapter::from_env()?),
-            (ProviderMode::Live, other) => {
-                return Err(format!(
-                    "live (API) mode has no adapter for {other}; use --provider subscription"
-                )
-                .into());
-            }
-        };
-        adapters.push(adapter);
-    }
-    Ok(Council::new(adapters, max_ai_streak)?)
+    Ok(Council::new(build_adapters(mode, agents)?, max_ai_streak)?)
 }
 
 fn print_outcome(outcome: &CycleOutcome) {

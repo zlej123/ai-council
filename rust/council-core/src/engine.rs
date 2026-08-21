@@ -57,6 +57,7 @@ pub struct Council {
     floor_cursor: usize,
     max_ai_streak: u64,
     metrics: Metrics,
+    event_sink: Option<tokio::sync::mpsc::UnboundedSender<RoomEvent>>,
 }
 
 enum ProcessingResult {
@@ -90,7 +91,14 @@ impl Council {
             floor_cursor: 0,
             max_ai_streak,
             metrics: Metrics::default(),
+            event_sink: None,
         })
+    }
+
+    /// Streams every committed RoomEvent to observers (e.g. a UI) as it
+    /// happens. Observation only: the sink is not part of the protocol.
+    pub fn set_event_sink(&mut self, sink: tokio::sync::mpsc::UnboundedSender<RoomEvent>) {
+        self.event_sink = Some(sink);
     }
 
     pub fn room(&self) -> &Room {
@@ -186,6 +194,9 @@ impl Council {
             content,
         };
         self.room.event_log.push(event.clone());
+        if let Some(sink) = &self.event_sink {
+            let _ = sink.send(event.clone());
+        }
         event
     }
 

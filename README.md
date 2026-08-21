@@ -132,6 +132,16 @@ cargo test --workspace
 
 테스트는 두 adapter의 병렬 barrier 도달, losing intent 폐기와 재판단, round-robin, provider 실패 시 fail-closed, 마지막 AI event 처리, 지표 계산, transcript 렌더링을 검증한다. 이 테스트는 orchestration의 증거이지 자연스러운 실제 대화의 증거가 아니다. 실제 품질 판단에는 서로 다른 주제의 live 세션과 사람의 `/rate` 평가가 필요하다.
 
+## 웹 UI
+
+실제 활용을 위한 로컬 웹 UI가 있다 (실험 계약 밖의 활용 레이어이며 프로토콜은 CLI와 동일한 엔진을 쓴다).
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p council-core --bin council-web
+```
+
+기본값은 `--provider subscription --agents claude,gemini,grok --port 8787`이고, http://127.0.0.1:8787 에서 채팅 버블·발언권 trace·지표·자연스러움 평점(1~5 버튼)을 제공한다. AI 발언은 커밋되는 즉시 화면에 나타나고, transcript는 `outputs/web-session-<unix>.md`로 자동 저장된다.
+
 ## 검증 현황 (2026-08-21)
 
 | 항목 | 상태 |
