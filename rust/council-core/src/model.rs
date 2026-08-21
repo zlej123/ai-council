@@ -7,15 +7,31 @@ use serde::{Deserialize, Serialize};
 pub enum AgentId {
     Gpt,
     Claude,
+    Gemini,
+    Grok,
 }
 
 impl AgentId {
-    pub const ORDER: [Self; 2] = [Self::Gpt, Self::Claude];
+    /// Global fixed arbitration order. A session's roster is any subset of
+    /// this order; round-robin fairness always follows this sequence.
+    pub const ORDER: [Self; 4] = [Self::Gpt, Self::Claude, Self::Gemini, Self::Grok];
 
     pub const fn index(self) -> usize {
         match self {
             Self::Gpt => 0,
             Self::Claude => 1,
+            Self::Gemini => 2,
+            Self::Grok => 3,
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "gpt" => Some(Self::Gpt),
+            "claude" => Some(Self::Claude),
+            "gemini" => Some(Self::Gemini),
+            "grok" => Some(Self::Grok),
+            _ => None,
         }
     }
 }
@@ -25,6 +41,8 @@ impl fmt::Display for AgentId {
         match self {
             Self::Gpt => write!(formatter, "GPT"),
             Self::Claude => write!(formatter, "Claude"),
+            Self::Gemini => write!(formatter, "Gemini"),
+            Self::Grok => write!(formatter, "Grok"),
         }
     }
 }
@@ -121,9 +139,9 @@ pub struct AgentState {
     pub error_count: u64,
 }
 
-pub fn empty_agent_states() -> BTreeMap<AgentId, AgentState> {
-    AgentId::ORDER
-        .into_iter()
-        .map(|agent| (agent, AgentState::default()))
+pub fn empty_agent_states(roster: &[AgentId]) -> BTreeMap<AgentId, AgentState> {
+    roster
+        .iter()
+        .map(|agent| (*agent, AgentState::default()))
         .collect()
 }

@@ -22,6 +22,7 @@ const INTENT_SCHEMA: &str = include_str!("../../../../src/intent.schema.json");
 pub struct CodexCliAdapter {
     binary: String,
     model: Option<String>,
+    effort: Option<String>,
     schema_path: PathBuf,
 }
 
@@ -32,6 +33,7 @@ impl CodexCliAdapter {
         Ok(Self {
             binary,
             model: std::env::var("CODEX_SUBSCRIPTION_MODEL").ok(),
+            effort: std::env::var("CODEX_SUBSCRIPTION_EFFORT").ok(),
             schema_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../src/intent.schema.json"),
         })
@@ -49,6 +51,11 @@ impl CodexCliAdapter {
             .arg("--json");
         if let Some(model) = &self.model {
             command.arg("--model").arg(model);
+        }
+        if let Some(effort) = &self.effort {
+            command
+                .arg("--config")
+                .arg(format!("model_reasoning_effort=\"{effort}\""));
         }
         if structured {
             command.arg("--output-schema").arg(&self.schema_path);
@@ -161,6 +168,162 @@ impl AgentAdapter for ClaudeCliAdapter {
     }
 }
 
+pub struct GrokCliAdapter {
+    binary: String,
+    model: Option<String>,
+    effort: Option<String>,
+}
+
+impl GrokCliAdapter {
+    pub fn subscription() -> CouncilResult<Self> {
+        let binary = std::env::var("GROK_CLI_BIN").unwrap_or_else(|_| "grok".to_owned());
+        verify_grok_subscription(&binary)?;
+        Ok(Self {
+            binary,
+            model: std::env::var("GROK_SUBSCRIPTION_MODEL").ok(),
+            effort: std::env::var("GROK_SUBSCRIPTION_EFFORT").ok(),
+        })
+    }
+
+    async fn invoke(
+        &self,
+        rules: String,
+        prompt: String,
+        structured: bool,
+    ) -> CouncilResult<String> {
+        // Grok's agentic runtime may spend turns on read-only tools even in
+        // plan mode, so tools are banned in the rules and a small turn budget
+        // is left for the final message.
+        let rules = format!(
+            "{rules}\nDo not use any tools, do not read or create files, and reply with text only."
+        );
+        let mut command = Command::new(&self.binary);
+        command
+            .arg("--single")
+            .arg(prompt)
+            .arg("--rules")
+            .arg(rules)
+            .arg("--output-format")
+            .arg("json")
+            .arg("--permission-mode")
+            .arg("plan")
+            .arg("--no-subagents")
+            .arg("--disable-web-search")
+            .arg("--max-turns")
+            .arg("4");
+        if let Some(model) = &self.model {
+            command.arg("--model").arg(model);
+        }
+        if let Some(effort) = &self.effort {
+            command.arg("--reasoning-effort").arg(effort);
+        }
+        if structured {
+            command.arg("--json-schema").arg(INTENT_SCHEMA);
+        }
+        remove_metered_api_environment(&mut command);
+        let output = run_child(command, String::new(), AgentId::Grok).await?;
+        parse_grok_message(&output)
+    }
+}
+
+#[async_trait]
+impl AgentAdapter for GrokCliAdapter {
+    fn id(&self) -> AgentId {
+        AgentId::Grok
+    }
+
+    async fn evaluate(&self, room: &RoomSnapshot, event: &RoomEvent) -> CouncilResult<Intent> {
+        let message = self
+            .invoke(
+                evaluation_instructions(self.id()),
+                evaluation_input(room),
+                true,
+            )
+            .await?;
+        parse_decision(&message, event.id)
+    }
+
+    async fn speak(&self, room: &RoomSnapshot, _intent: &Intent) -> CouncilResult<String> {
+        let message = self
+            .invoke(
+                speaking_instructions(self.id()),
+                speaking_input(room),
+                false,
+            )
+            .await?;
+        non_empty_speech(self.id(), message)
+    }
+}
+
+pub struct AntigravityCliAdapter {
+    binary: String,
+    model: String,
+    effort: Option<String>,
+}
+
+impl AntigravityCliAdapter {
+    pub fn subscription() -> CouncilResult<Self> {
+        let binary = std::env::var("ANTIGRAVITY_CLI_BIN").unwrap_or_else(|_| "agy".to_owned());
+        verify_antigravity_subscription(&binary)?;
+        Ok(Self {
+            binary,
+            model: std::env::var("GEMINI_SUBSCRIPTION_MODEL")
+                .unwrap_or_else(|_| "gemini-3.7-flash-high".to_owned()),
+            effort: std::env::var("GEMINI_SUBSCRIPTION_EFFORT").ok(),
+        })
+    }
+
+    async fn invoke(&self, prompt: String, structured: bool) -> CouncilResult<String> {
+        let mut command = Command::new(&self.binary);
+        command
+            .arg("--print")
+            .arg(prompt)
+            .arg("--output-format")
+            .arg("json")
+            .arg("--sandbox")
+            .arg("--model")
+            .arg(&self.model);
+        if let Some(effort) = &self.effort {
+            command.arg("--effort").arg(effort);
+        }
+        if structured {
+            command.arg("--json-schema").arg(INTENT_SCHEMA);
+        }
+        remove_metered_api_environment(&mut command);
+        let output = run_child(command, String::new(), AgentId::Gemini).await?;
+        parse_antigravity_message(&output, structured)
+    }
+}
+
+#[async_trait]
+impl AgentAdapter for AntigravityCliAdapter {
+    fn id(&self) -> AgentId {
+        AgentId::Gemini
+    }
+
+    async fn evaluate(&self, room: &RoomSnapshot, event: &RoomEvent) -> CouncilResult<Intent> {
+        // The Antigravity CLI has no system-prompt flag, so instructions and
+        // input travel in one prompt, and the agentic runtime is told
+        // explicitly to stay tool-less.
+        let prompt = format!(
+            "{}\nDo not use any tools, do not create or edit files, and reply with text only.\n\n{}",
+            evaluation_instructions(self.id()),
+            evaluation_input(room)
+        );
+        let message = self.invoke(prompt, true).await?;
+        parse_decision(&message, event.id)
+    }
+
+    async fn speak(&self, room: &RoomSnapshot, _intent: &Intent) -> CouncilResult<String> {
+        let prompt = format!(
+            "{}\nDo not use any tools, do not create or edit files, and reply with text only.\n\n{}",
+            speaking_instructions(self.id()),
+            speaking_input(room)
+        );
+        non_empty_speech(self.id(), self.invoke(prompt, false).await?)
+    }
+}
+
 async fn run_child(mut command: Command, prompt: String, agent: AgentId) -> CouncilResult<String> {
     command
         .stdin(Stdio::piped())
@@ -250,29 +413,71 @@ fn verify_claude_subscription(binary: &str) -> CouncilResult<()> {
     Ok(())
 }
 
+fn verify_grok_subscription(binary: &str) -> CouncilResult<()> {
+    let mut command = SyncCommand::new(binary);
+    command.arg("models");
+    remove_metered_api_environment_sync(&mut command);
+    let output = command
+        .output()
+        .map_err(|error| CouncilError::provider(AgentId::Grok, error))?;
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if !output.status.success() || !combined.contains("logged in with grok.com") {
+        return Err(CouncilError::provider(
+            AgentId::Grok,
+            "Grok CLI is not logged in with a grok.com subscription (run `grok login`)",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_antigravity_subscription(binary: &str) -> CouncilResult<()> {
+    let mut command = SyncCommand::new(binary);
+    command.arg("models");
+    remove_metered_api_environment_sync(&mut command);
+    let output = command
+        .output()
+        .map_err(|error| CouncilError::provider(AgentId::Gemini, error))?;
+    let listed_models = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| line.trim_start().starts_with("gemini"));
+    if !output.status.success() || !listed_models {
+        return Err(CouncilError::provider(
+            AgentId::Gemini,
+            "Antigravity CLI is not logged in (open Antigravity and sign in with a Google account)",
+        ));
+    }
+    Ok(())
+}
+
 fn remove_metered_api_environment(command: &mut Command) {
-    for variable in metered_api_variables() {
+    for variable in METERED_API_VARIABLES {
         command.env_remove(variable);
     }
 }
 
 fn remove_metered_api_environment_sync(command: &mut SyncCommand) {
-    for variable in metered_api_variables() {
+    for variable in METERED_API_VARIABLES {
         command.env_remove(variable);
     }
 }
 
-fn metered_api_variables() -> [&'static str; 7] {
-    [
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_AUTH_TOKEN",
-        "CLAUDE_CODE_USE_BEDROCK",
-        "CLAUDE_CODE_USE_VERTEX",
-        "CLAUDE_CODE_USE_FOUNDRY",
-        "AWS_BEARER_TOKEN_BEDROCK",
-    ]
-}
+const METERED_API_VARIABLES: [&str; 11] = [
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "XAI_API_KEY",
+    "GROK_API_KEY",
+];
 
 fn parse_codex_message(output: &str) -> CouncilResult<String> {
     let mut last_message = None;
@@ -317,6 +522,40 @@ fn parse_claude_message(output: &str, structured: bool) -> CouncilResult<String>
         .ok_or_else(|| CouncilError::provider(AgentId::Claude, "no result in CLI JSON output"))
 }
 
+fn parse_grok_message(output: &str) -> CouncilResult<String> {
+    let value: Value = serde_json::from_str(output)
+        .map_err(|error| CouncilError::provider(AgentId::Grok, error))?;
+    value
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| CouncilError::provider(AgentId::Grok, "no text in CLI JSON output"))
+}
+
+fn parse_antigravity_message(output: &str, structured: bool) -> CouncilResult<String> {
+    let value: Value = serde_json::from_str(output)
+        .map_err(|error| CouncilError::provider(AgentId::Gemini, error))?;
+    if value.get("status").and_then(Value::as_str) != Some("SUCCESS") {
+        let status = value
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown status");
+        return Err(CouncilError::provider(
+            AgentId::Gemini,
+            format!("Antigravity CLI returned {status}"),
+        ));
+    }
+    if structured && let Some(structured_output) = value.get("structured_output") {
+        return serde_json::to_string(structured_output)
+            .map_err(|error| CouncilError::provider(AgentId::Gemini, error));
+    }
+    value
+        .get("response")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| CouncilError::provider(AgentId::Gemini, "no response in CLI JSON output"))
+}
+
 fn non_empty_speech(agent: AgentId, message: String) -> CouncilResult<String> {
     let speech = message.trim();
     if speech.is_empty() {
@@ -327,7 +566,9 @@ fn non_empty_speech(agent: AgentId, message: String) -> CouncilResult<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_claude_message, parse_codex_message};
+    use super::{
+        parse_antigravity_message, parse_claude_message, parse_codex_message, parse_grok_message,
+    };
 
     #[test]
     fn parses_codex_jsonl_final_message() {
@@ -355,5 +596,26 @@ mod tests {
         let output = r#"{"is_error":true,"result":"weekly limit reached","total_cost_usd":0}"#;
         let error = parse_claude_message(output, false).unwrap_err();
         assert!(error.to_string().contains("weekly limit reached"));
+    }
+
+    #[test]
+    fn parses_grok_text_field() {
+        let output =
+            r#"{"text":"{\"decision\":\"PASS\",\"reason\":\"\"}","stopReason":"end_turn"}"#;
+        assert_eq!(
+            parse_grok_message(output).unwrap(),
+            r#"{"decision":"PASS","reason":""}"#
+        );
+    }
+
+    #[test]
+    fn parses_antigravity_structured_output_and_rejects_failure() {
+        let ok = r#"{"status":"SUCCESS","response":"ignored","structured_output":{"decision":"REQUEST_FLOOR","reason":"new"}}"#;
+        assert_eq!(
+            parse_antigravity_message(ok, true).unwrap(),
+            r#"{"decision":"REQUEST_FLOOR","reason":"new"}"#
+        );
+        let failed = r#"{"status":"FAILED","response":"quota"}"#;
+        assert!(parse_antigravity_message(failed, false).is_err());
     }
 }

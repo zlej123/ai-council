@@ -2,7 +2,9 @@
 
 ## 1. 질문과 성공 조건
 
-**질문:** You + GPT + Claude가 같은 발언 기록을 실제로 처리하고, 각 AI가 스스로 침묵하거나 발언권을 요청할 때, 단순한 다중 답변이 아니라 자연스러운 3자 대화가 만들어지는가?
+**질문:** You + 여러 AI(GPT, Claude, Gemini, Grok 중 2~4)가 같은 발언 기록을 실제로 처리하고, 각 AI가 스스로 침묵하거나 발언권을 요청할 때, 단순한 다중 답변이 아니라 자연스러운 단체대화가 만들어지는가?
+
+참가 AI는 `--agents` 플래그로 고르며(기본 `gpt,claude`), 전역 고정 순서는 `[GPT, Claude, Gemini, Grok]`이다. 프로토콜의 다른 어떤 규칙도 참가 수에 의존하지 않는다.
 
 성공은 기능 완성이 아니라 아래 관찰이 가능한 상태다.
 
@@ -15,7 +17,7 @@
 
 ## 2. 범위
 
-포함: 단일 in-memory room, You/GPT/Claude, 텍스트 CLI, 병렬 listening barrier, provider별 adapter, 기계적 floor arbitration, 세션 지표, 결정론적 mock 실험, 구독 로그인 CLI 실험.
+포함: 단일 in-memory room, You + 선택된 AI 로스터(GPT/Claude/Gemini/Grok), 텍스트 CLI, 병렬 listening barrier, provider별 adapter, 기계적 floor arbitration, 세션 지표, 결정론적 mock 실험, 구독 로그인 CLI 실험.
 
 제외: UI, DB/복구, Judge/router, 장기·요약 memory, 음성, 도구 사용, 스트리밍, 인증, 다중 room, 비용 최적화, production retry/failover.
 
@@ -33,7 +35,7 @@
 3. 각 AI가 event를 처리한다. 저자가 아닌 AI는 provider inference로 `PASS/REQUEST_FLOOR`를 결정한다. AI 저자는 자기 event를 sync-only 처리한다.
 4. 두 `last_heard_event`가 모두 최신 id가 되어야 listening barrier가 완료된다. 하나라도 실패하면 **fail closed**: 발언권을 주지 않고 사용자에게 오류를 반환한다.
 5. 유효한 requester가 없으면 `QUIESCENT`로 사람을 기다린다.
-6. requester가 있으면 고정 순서 `[GPT, Claude]`의 round-robin cursor만으로 한 명을 고른다. 의미, confidence, latency, provider는 사용하지 않는다.
+6. requester가 있으면 고정 순서 `[GPT, Claude, Gemini, Grok]`(참가 로스터로 filter)의 round-robin cursor만으로 한 명을 고른다. 의미, confidence, latency, provider는 사용하지 않는다.
 7. 선택된 adapter가 현재 room snapshot과 자기 intent를 받아 짧은 발언을 생성한다. commit 후 1번으로 돌아간다.
 8. 사용자 발언 하나 뒤 AI 발언이 3개에 도달하면 `AI_STREAK_LIMIT`로 멈춘다. 이는 제품 정책이 아니라 무한 루프를 막는 spike 안전장치다.
 
@@ -53,12 +55,12 @@
 
 종량제 모드에서 OpenAI adapter는 Responses API, Claude adapter는 stateless Messages API를 각각 직접 감싼다. 기본 모델은 `gpt-5.4-mini`, `claude-sonnet-4-6`이며 환경변수로 교체할 수 있다. 키는 `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`에서만 읽는다.
 
-구독 모드는 별도 adapter로 `codex exec --ephemeral`과 `claude --print --no-session-persistence`를 호출한다. 시작 전에 Codex가 ChatGPT로, Claude가 claude.ai 구독으로 로그인했는지 검사하며 child process에서 API key·외부 cloud 인증 환경변수를 제거한다. 이 모드는 별도 API 종량제 대신 구독 한도 또는 구독자용 월간 credit을 소비한다. 추가 usage credits가 계정에서 활성화된 경우 생길 수 있는 초과 결제까지 로컬 코드가 차단하지는 못한다.
+구독 모드는 별도 adapter로 `codex exec --ephemeral`, `claude --print --no-session-persistence`, `grok --single`(grok.com 구독), `agy --print`(Antigravity, Google 계정)를 호출한다. 시작 전에 각 CLI의 구독 로그인 상태를 검사하며 child process에서 API key·외부 cloud 인증 환경변수를 제거한다. 이 모드는 별도 API 종량제 대신 구독 한도 또는 구독자용 월간 credit을 소비한다. 추가 usage credits가 계정에서 활성화된 경우 생길 수 있는 초과 결제까지 로컬 코드가 차단하지는 못한다.
 
 ## 6. 지표와 판정
 
 - **PASS율** = PASS 판단 수 / 전체 모델 판단 수.
-- **동시 REQUEST율** = 두 AI가 모두 평가한 barrier 중 둘 다 REQUEST한 수 / 해당 barrier 수.
+- **동시 REQUEST율** = 평가자가 2명 이상인 barrier 중 2명 이상이 REQUEST한 수 / 해당 barrier 수. (2-AI 로스터에서는 기존 "둘 다 평가, 둘 다 REQUEST" 정의와 동일하다.)
 - **AI 연속발언 길이** = 사람 발언 사이의 AI event 개수. 평균·최대·분포를 출력한다.
 - **자연스러운 단체대화 체감** = 사용자가 `/rate 1..5 선택적 메모`로 기록한 평균과 원문. 자동 품질 점수로 대체하지 않는다.
 

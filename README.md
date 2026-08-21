@@ -1,6 +1,6 @@
 # Council Core Spike
 
-You + GPT + Claude 3자 대화에서 다음 하나를 검증하는 실행 가능한 Rust 실험이다.
+You + 여러 AI(GPT, Claude, Gemini, Grok 중 2~4)의 대화에서 다음 하나를 검증하는 실행 가능한 Rust 실험이다.
 
 > 모든 AI가 최신 Room Event를 처리한 뒤 스스로 `PASS` 또는 `REQUEST_FLOOR`를 정하고, 내용과 무관한 발언권 중재만으로 자연스러운 단체대화가 만들어지는가?
 
@@ -28,11 +28,18 @@ cargo run --manifest-path rust/Cargo.toml -p council-core
 
 ## 구독으로 실제 모델 실행
 
-로컬 Codex CLI가 ChatGPT 구독으로, Claude Code CLI가 claude.ai 구독으로 로그인되어 있다면 별도의 API 키 없이 실행할 수 있다.
+로컬 CLI가 각자의 구독으로 로그인되어 있다면 별도의 API 키 없이 실행할 수 있다: Codex(`codex`, ChatGPT 구독), Claude Code(`claude`, claude.ai 구독), Grok(`grok`, grok.com 구독), Antigravity(`agy`, Google 계정).
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml -p council-core -- \
   --provider subscription
+```
+
+참가 AI는 `--agents`로 고른다 (기본 `gpt,claude`, 순서는 항상 전역 고정 순서 GPT→Claude→Gemini→Grok을 따른다).
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p council-core -- \
+  --provider subscription --agents gpt,claude,gemini,grok
 ```
 
 모델을 호출하거나 구독 한도를 쓰지 않고 로그인·실행 파일만 점검:
@@ -45,11 +52,16 @@ cargo run --manifest-path rust/Cargo.toml -p council-core -- \
 
 이 모드는 시작할 때 두 CLI의 로그인 방식을 검사하고, child process에서 `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`와 외부 cloud provider 변수를 제거한다. provider session은 저장하지 않으며 매 판단은 ephemeral/no-session-persistence 프로세스에서 전체 Room snapshot으로 다시 시작한다.
 
-선택 모델:
+선택 모델·effort (CLI가 지원하는 항목만):
 
 ```bash
-export CODEX_SUBSCRIPTION_MODEL="..."       # 생략하면 Codex 구독 기본값
-export CLAUDE_SUBSCRIPTION_MODEL="sonnet"  # 기본값
+export CODEX_SUBSCRIPTION_MODEL="..."                  # 생략하면 Codex 구독 기본값
+export CODEX_SUBSCRIPTION_EFFORT="high"                # model_reasoning_effort로 전달
+export CLAUDE_SUBSCRIPTION_MODEL="sonnet"              # 기본값 (effort 개념 없음)
+export GEMINI_SUBSCRIPTION_MODEL="gemini-3.7-flash-high"  # 기본값
+export GEMINI_SUBSCRIPTION_EFFORT="high"               # agy --effort
+export GROK_SUBSCRIPTION_MODEL="..."                   # 생략하면 Grok CLI 기본값
+export GROK_SUBSCRIPTION_EFFORT="high"                 # grok --reasoning-effort
 ```
 
 이 방식은 **별도 API 종량제 호출을 피하지만 무제한은 아니다.** Codex는 ChatGPT 플랜 한도를, `claude -p`는 현재 구독자에게 제공되는 별도 월간 Agent SDK credit 또는 적용되는 구독 한도를 소비한다. Claude 측 credit은 계정에서 별도 opt-in이 필요할 수 있다. 한도/credit이 끝나면 멈추도록 계정의 추가 usage credits 또는 자동 충전을 비활성화해야 비용 상한이 확실하다. 또한 CLI를 매 inference마다 실행하므로 API보다 느리고, 배포용 backend가 아니라 로컬 spike 전용이다.
@@ -103,7 +115,7 @@ commit RoomEvent
 - `providers/openai.rs`: OpenAI Responses API adapter
 - `providers/anthropic.rs`: Claude Messages API adapter
 - `providers/mock.rs`: 무료 결정론적 protocol demo
-- `providers/subscription.rs`: ChatGPT/Claude 구독 로그인 CLI adapter
+- `providers/subscription.rs`: ChatGPT/Claude/Grok/Antigravity 구독 로그인 CLI adapter
 - `metrics.rs`: PASS율, 동시 REQUEST율, AI streak, 사람 평점
 - `tests/protocol.rs`: 핵심 protocol invariants
 

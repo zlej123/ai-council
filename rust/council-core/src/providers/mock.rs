@@ -7,6 +7,11 @@ pub struct MockAdapter {
     id: AgentId,
 }
 
+/// The agent one place later in the fixed order, if any.
+fn follows(author: AgentId) -> Option<AgentId> {
+    AgentId::ORDER.get(author.index() + 1).copied()
+}
+
 impl MockAdapter {
     pub const fn new(id: AgentId) -> Self {
         Self { id }
@@ -20,12 +25,15 @@ impl AgentAdapter for MockAdapter {
     }
 
     async fn evaluate(&self, _room: &RoomSnapshot, event: &RoomEvent) -> CouncilResult<Intent> {
-        let intent = match (self.id, event.author) {
-            (_, Author::You) => Intent::request_floor(event.id, "mock human-turn contribution"),
-            (AgentId::Claude, Author::Agent(AgentId::Gpt)) => {
+        // Deterministic demo: everyone wants the human's opening, and exactly
+        // the next agent in the fixed order follows up one AI speech, so every
+        // roster produces one contention, one follow-up, then quiescence.
+        let intent = match event.author {
+            Author::You => Intent::request_floor(event.id, "mock human-turn contribution"),
+            Author::Agent(author) if follows(author) == Some(self.id) => {
                 Intent::request_floor(event.id, "mock follow-up contribution")
             }
-            _ => Intent::pass(event.id),
+            Author::Agent(_) => Intent::pass(event.id),
         };
         Ok(intent)
     }
@@ -42,6 +50,12 @@ impl AgentAdapter for MockAdapter {
             ),
             AgentId::Claude => {
                 "한 가지 덧붙이면, 그 기준이 실제 사용자 행동을 관찰하는지도 확인해야 해요. 기능이 작동하는 것과 대화가 자연스러운 것은 다르니까요.".to_owned()
+            }
+            AgentId::Gemini => {
+                "근거 자료 쪽에서 보면, 비슷한 다중 에이전트 실험들이 이미 있으니 그 결과와 비교해볼 수 있어요.".to_owned()
+            }
+            AgentId::Grok => {
+                "반대로 생각하면, AI끼리의 합의가 오히려 편향을 강화할 수도 있다는 점은 짚고 가야 해요.".to_owned()
             }
         };
         Ok(speech)

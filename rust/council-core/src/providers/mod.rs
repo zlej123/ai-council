@@ -6,7 +6,7 @@ mod subscription;
 pub use anthropic::AnthropicAdapter;
 pub use mock::MockAdapter;
 pub use openai::OpenAiAdapter;
-pub use subscription::{ClaudeCliAdapter, CodexCliAdapter};
+pub use subscription::{AntigravityCliAdapter, ClaudeCliAdapter, CodexCliAdapter, GrokCliAdapter};
 
 use serde::Deserialize;
 

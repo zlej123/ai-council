@@ -14,7 +14,7 @@ pub struct NaturalnessRating {
 pub struct Metrics {
     decision_count: u64,
     pass_count: u64,
-    dual_evaluation_barriers: u64,
+    multi_evaluation_barriers: u64,
     simultaneous_request_barriers: u64,
     ai_streaks: Vec<u64>,
     ratings: Vec<NaturalnessRating>,
@@ -24,7 +24,7 @@ pub struct Metrics {
 pub struct MetricsReport {
     pub decisions: u64,
     pub pass_rate: Option<f64>,
-    pub dual_evaluation_barriers: u64,
+    pub multi_evaluation_barriers: u64,
     pub simultaneous_request_rate: Option<f64>,
     pub ai_streak_count: u64,
     pub mean_ai_streak: Option<f64>,
@@ -42,12 +42,13 @@ impl Metrics {
             .filter(|decision| **decision == Decision::Pass)
             .count() as u64;
 
-        if decisions.len() == 2 {
-            self.dual_evaluation_barriers += 1;
-            if decisions
+        if decisions.len() >= 2 {
+            self.multi_evaluation_barriers += 1;
+            let requesters = decisions
                 .iter()
-                .all(|decision| *decision == Decision::RequestFloor)
-            {
+                .filter(|decision| **decision == Decision::RequestFloor)
+                .count();
+            if requesters >= 2 {
                 self.simultaneous_request_barriers += 1;
             }
         }
@@ -73,7 +74,7 @@ impl Metrics {
         let pass_rate = ratio(self.pass_count, self.decision_count);
         let simultaneous_request_rate = ratio(
             self.simultaneous_request_barriers,
-            self.dual_evaluation_barriers,
+            self.multi_evaluation_barriers,
         );
         let mean_ai_streak = if self.ai_streaks.is_empty() {
             None
@@ -100,7 +101,7 @@ impl Metrics {
         MetricsReport {
             decisions: self.decision_count,
             pass_rate,
-            dual_evaluation_barriers: self.dual_evaluation_barriers,
+            multi_evaluation_barriers: self.multi_evaluation_barriers,
             simultaneous_request_rate,
             ai_streak_count: self.ai_streaks.len() as u64,
             mean_ai_streak,

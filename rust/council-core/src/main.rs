@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use council_core::providers::{
-    AnthropicAdapter, ClaudeCliAdapter, CodexCliAdapter, MockAdapter, OpenAiAdapter,
+    AnthropicAdapter, AntigravityCliAdapter, ClaudeCliAdapter, CodexCliAdapter, GrokCliAdapter,
+    MockAdapter, OpenAiAdapter,
 };
 use council_core::transcript::{barrier_line, render_session_markdown};
 use council_core::{AgentAdapter, AgentId, Council, CycleOutcome};
@@ -19,6 +20,7 @@ enum ProviderMode {
 
 struct Options {
     provider: ProviderMode,
+    agents: Vec<AgentId>,
     max_ai_streak: u64,
     once: Option<String>,
     check_providers: bool,
@@ -30,8 +32,8 @@ impl Options {
     fn provider_label(&self) -> &'static str {
         match self.provider {
             ProviderMode::Mock => "mock",
-            ProviderMode::Subscription => "ChatGPT + Claude subscription CLIs",
-            ProviderMode::Live => "live GPT + Claude",
+            ProviderMode::Subscription => "subscription CLIs",
+            ProviderMode::Live => "live APIs",
         }
     }
 
@@ -52,7 +54,7 @@ impl Options {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let options = parse_options()?;
-    let mut council = build_council(options.provider, options.max_ai_streak)?;
+    let mut council = build_council(options.provider, &options.agents, options.max_ai_streak)?;
 
     if options.check_providers {
         println!("Provider authentication and executables are ready; no model was called.");
@@ -79,8 +81,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Council Core Spike ready.");
     println!(
-        "Provider: {} · max AI streak: {}",
+        "Provider: {} · agents: {} · max AI streak: {}",
         options.provider_label(),
+        council
+            .roster()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", "),
         options.max_ai_streak
     );
     println!("Type a message, or /help for experimental commands.\n");
@@ -177,6 +185,7 @@ fn save_transcript(
 
 fn parse_options() -> Result<Options, Box<dyn Error>> {
     let mut provider = ProviderMode::Mock;
+    let mut agents = vec![AgentId::Gpt, AgentId::Claude];
     let mut max_ai_streak = 3;
     let mut once = None;
     let mut check_providers = false;
@@ -197,6 +206,17 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
                     _ => return Err(format!("unknown provider mode: {value}").into()),
                 };
             }
+            "--agents" => {
+                let value = arguments
+                    .next()
+                    .ok_or("--agents needs a comma-separated list, e.g. gpt,claude,gemini,grok")?;
+                agents = value
+                    .split(',')
+                    .map(|name| {
+                        AgentId::parse(name).ok_or_else(|| format!("unknown agent: {name}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+            }
             "--max-ai-streak" => {
                 max_ai_streak = arguments
                     .next()
@@ -215,7 +235,7 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
             "--no-transcript" => no_transcript = true,
             "--help" | "-h" => {
                 println!(
-                    "Usage: council-core [--provider mock|subscription|live] [--max-ai-streak N] [--once MESSAGE] [--check-providers] [--transcript PATH] [--no-transcript]"
+                    "Usage: council-core [--provider mock|subscription|live] [--agents gpt,claude,gemini,grok] [--max-ai-streak N] [--once MESSAGE] [--check-providers] [--transcript PATH] [--no-transcript]"
                 );
                 std::process::exit(0);
             }
@@ -225,6 +245,7 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
 
     Ok(Options {
         provider,
+        agents,
         max_ai_streak,
         once,
         check_providers,
@@ -233,21 +254,38 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
     })
 }
 
-fn build_council(mode: ProviderMode, max_ai_streak: u64) -> Result<Council, Box<dyn Error>> {
-    let adapters: Vec<Arc<dyn AgentAdapter>> = match mode {
-        ProviderMode::Mock => vec![
-            Arc::new(MockAdapter::new(AgentId::Gpt)),
-            Arc::new(MockAdapter::new(AgentId::Claude)),
-        ],
-        ProviderMode::Subscription => vec![
-            Arc::new(CodexCliAdapter::subscription()?),
-            Arc::new(ClaudeCliAdapter::subscription()?),
-        ],
-        ProviderMode::Live => vec![
-            Arc::new(OpenAiAdapter::from_env()?),
-            Arc::new(AnthropicAdapter::from_env()?),
-        ],
-    };
+fn build_council(
+    mode: ProviderMode,
+    agents: &[AgentId],
+    max_ai_streak: u64,
+) -> Result<Council, Box<dyn Error>> {
+    let mut adapters: Vec<Arc<dyn AgentAdapter>> = Vec::new();
+    for agent in agents {
+        let adapter: Arc<dyn AgentAdapter> = match (mode, agent) {
+            (ProviderMode::Mock, _) => Arc::new(MockAdapter::new(*agent)),
+            (ProviderMode::Subscription, AgentId::Gpt) => {
+                Arc::new(CodexCliAdapter::subscription()?)
+            }
+            (ProviderMode::Subscription, AgentId::Claude) => {
+                Arc::new(ClaudeCliAdapter::subscription()?)
+            }
+            (ProviderMode::Subscription, AgentId::Gemini) => {
+                Arc::new(AntigravityCliAdapter::subscription()?)
+            }
+            (ProviderMode::Subscription, AgentId::Grok) => {
+                Arc::new(GrokCliAdapter::subscription()?)
+            }
+            (ProviderMode::Live, AgentId::Gpt) => Arc::new(OpenAiAdapter::from_env()?),
+            (ProviderMode::Live, AgentId::Claude) => Arc::new(AnthropicAdapter::from_env()?),
+            (ProviderMode::Live, other) => {
+                return Err(format!(
+                    "live (API) mode has no adapter for {other}; use --provider subscription"
+                )
+                .into());
+            }
+        };
+        adapters.push(adapter);
+    }
     Ok(Council::new(adapters, max_ai_streak)?)
 }
 

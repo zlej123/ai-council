@@ -175,6 +175,40 @@ async fn simultaneous_requests_are_granted_round_robin_without_meaning_scores() 
 }
 
 #[tokio::test]
+async fn four_agent_roster_grants_round_robin_in_fixed_global_order() {
+    let make = |id| Arc::new(TestAdapter::new(id, Decision::RequestFloor, Decision::Pass));
+    let adapters: Vec<Arc<dyn AgentAdapter>> = vec![
+        make(AgentId::Grok),
+        make(AgentId::Gpt),
+        make(AgentId::Gemini),
+        make(AgentId::Claude),
+    ];
+    let mut council = Council::new(adapters, 3).unwrap();
+
+    let first = council.submit_human("one").await.unwrap();
+    let second = council.submit_human("two").await.unwrap();
+    let third = council.submit_human("three").await.unwrap();
+
+    // Insertion order was shuffled; arbitration still follows the global order.
+    assert_eq!(first.barriers[0].floor_granted, Some(AgentId::Gpt));
+    assert_eq!(second.barriers[0].floor_granted, Some(AgentId::Claude));
+    assert_eq!(third.barriers[0].floor_granted, Some(AgentId::Gemini));
+    assert!(
+        council
+            .agent_states()
+            .values()
+            .all(|state| state.last_heard_event == Some(6))
+    );
+    // 3 human barriers were 4-way contentions; the 3 AI-speech barriers had
+    // three evaluators each and no contention.
+    assert_eq!(council.metrics_report().multi_evaluation_barriers, 6);
+    assert_eq!(
+        council.metrics_report().simultaneous_request_rate,
+        Some(0.5)
+    );
+}
+
+#[tokio::test]
 async fn provider_failure_fails_closed_before_any_floor_grant() {
     let gpt =
         Arc::new(TestAdapter::new(AgentId::Gpt, Decision::Pass, Decision::Pass).failing_on(1));

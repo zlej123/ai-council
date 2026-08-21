@@ -51,6 +51,7 @@ pub struct CycleOutcome {
 
 pub struct Council {
     room: Room,
+    roster: Vec<AgentId>,
     states: BTreeMap<AgentId, AgentState>,
     adapters: BTreeMap<AgentId, Arc<dyn AgentAdapter>>,
     floor_cursor: usize,
@@ -72,16 +73,19 @@ impl Council {
                 return Err(CouncilError::new(format!("duplicate adapter for {id}")));
             }
         }
-        for required in AgentId::ORDER {
-            if !by_id.contains_key(&required) {
-                return Err(CouncilError::new(format!(
-                    "missing required adapter for {required}"
-                )));
-            }
+        if by_id.len() < 2 {
+            return Err(CouncilError::new(
+                "a council needs at least two AI participants",
+            ));
         }
+        let roster: Vec<AgentId> = AgentId::ORDER
+            .into_iter()
+            .filter(|agent| by_id.contains_key(agent))
+            .collect();
         Ok(Self {
             room: Room::default(),
-            states: empty_agent_states(),
+            states: empty_agent_states(&roster),
+            roster,
             adapters: by_id,
             floor_cursor: 0,
             max_ai_streak,
@@ -91,6 +95,10 @@ impl Council {
 
     pub fn room(&self) -> &Room {
         &self.room
+    }
+
+    pub fn roster(&self) -> &[AgentId] {
+        &self.roster
     }
 
     pub fn agent_states(&self) -> &BTreeMap<AgentId, AgentState> {
@@ -189,7 +197,7 @@ impl Council {
             ));
         }
 
-        let jobs = AgentId::ORDER.into_iter().map(|agent| {
+        let jobs = self.roster.iter().copied().map(|agent| {
             let adapter = Arc::clone(&self.adapters[&agent]);
             let event = event.clone();
             let snapshot = snapshot.clone();
@@ -211,7 +219,7 @@ impl Council {
             let state = self
                 .states
                 .get_mut(&agent)
-                .expect("all fixed agents have state");
+                .expect("all roster agents have state");
             match processing {
                 ProcessingResult::SyncOnly => {
                     state.last_heard_event = Some(event.id);
@@ -269,8 +277,9 @@ impl Council {
     }
 
     fn valid_requesters(&self, event_id: u64) -> Vec<AgentId> {
-        AgentId::ORDER
-            .into_iter()
+        self.roster
+            .iter()
+            .copied()
             .filter(|agent| {
                 self.states[agent]
                     .pending_intent
@@ -284,14 +293,14 @@ impl Council {
     }
 
     fn select_requester(&mut self, requesters: &[AgentId]) -> AgentId {
-        for offset in 0..AgentId::ORDER.len() {
-            let index = (self.floor_cursor + offset) % AgentId::ORDER.len();
-            let candidate = AgentId::ORDER[index];
+        for offset in 0..self.roster.len() {
+            let index = (self.floor_cursor + offset) % self.roster.len();
+            let candidate = self.roster[index];
             if requesters.contains(&candidate) {
-                self.floor_cursor = (index + 1) % AgentId::ORDER.len();
+                self.floor_cursor = (index + 1) % self.roster.len();
                 return candidate;
             }
         }
-        unreachable!("select_requester is called with at least one fixed agent")
+        unreachable!("select_requester is called with at least one roster agent")
     }
 }
