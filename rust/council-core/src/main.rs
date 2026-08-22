@@ -191,12 +191,7 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
                 let value = arguments
                     .next()
                     .ok_or("--agents needs a comma-separated list, e.g. gpt,claude,gemini,grok")?;
-                agents = value
-                    .split(',')
-                    .map(|name| {
-                        AgentId::parse(name).ok_or_else(|| format!("unknown agent: {name}"))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                agents = AgentId::parse_list(&value)?;
             }
             "--max-ai-streak" => {
                 max_ai_streak = arguments

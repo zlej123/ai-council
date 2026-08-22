@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -13,6 +14,8 @@ struct TestAdapter {
     human_decision: Decision,
     other_decision: Decision,
     human_barrier: Option<Arc<Barrier>>,
+    speech_barrier: Option<Arc<Barrier>>,
+    speech_blocked_once: AtomicBool,
     fail_event: Option<u64>,
     evaluated_events: Mutex<Vec<u64>>,
 }
@@ -24,6 +27,8 @@ impl TestAdapter {
             human_decision,
             other_decision,
             human_barrier: None,
+            speech_barrier: None,
+            speech_blocked_once: AtomicBool::new(false),
             fail_event: None,
             evaluated_events: Mutex::new(Vec::new()),
         }
@@ -31,6 +36,14 @@ impl TestAdapter {
 
     fn with_human_barrier(mut self, barrier: Arc<Barrier>) -> Self {
         self.human_barrier = Some(barrier);
+        self
+    }
+
+    /// The FIRST speak() rendezvous on this barrier and then never completes,
+    /// so a test can cancel the cycle while the speech is "in flight"; later
+    /// speeches complete normally.
+    fn with_speech_barrier(mut self, barrier: Arc<Barrier>) -> Self {
+        self.speech_barrier = Some(barrier);
         self
     }
 
@@ -73,6 +86,12 @@ impl AgentAdapter for TestAdapter {
     }
 
     async fn speak(&self, _room: &RoomSnapshot, _intent: &Intent) -> CouncilResult<String> {
+        if let Some(barrier) = &self.speech_barrier
+            && !self.speech_blocked_once.swap(true, Ordering::SeqCst)
+        {
+            barrier.wait().await;
+            std::future::pending::<()>().await;
+        }
         Ok(format!("{} test contribution", self.id))
     }
 }
@@ -272,6 +291,44 @@ async fn seeded_room_continues_with_sequential_ids() {
     assert_eq!(outcome.appended_events[0].id, 3);
     assert_eq!(council.room().event_log.len(), 4);
     assert!(council.seed_room(Vec::new()).is_err());
+}
+
+#[tokio::test]
+async fn cancellation_is_a_clean_stop_that_keeps_the_cursor_fair() {
+    // GPT's speech blocks until the test cancels, so the grant never commits.
+    let gate = Arc::new(Barrier::new(2));
+    let gpt = Arc::new(
+        TestAdapter::new(AgentId::Gpt, Decision::RequestFloor, Decision::Pass)
+            .with_speech_barrier(Arc::clone(&gate)),
+    );
+    let claude = Arc::new(TestAdapter::new(
+        AgentId::Claude,
+        Decision::RequestFloor,
+        Decision::Pass,
+    ));
+    let mut council = council(gpt, claude, 3);
+    let cancel = Arc::new(tokio::sync::Notify::new());
+
+    let canceller = Arc::clone(&cancel);
+    let release = Arc::clone(&gate);
+    tokio::spawn(async move {
+        // Wait until GPT is inside speak(), then cancel and let it finish.
+        release.wait().await;
+        canceller.notify_one();
+    });
+
+    let outcome = council
+        .submit_human_cancellable("topic", None, Some(cancel))
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.stop_reason, StopReason::Cancelled);
+    assert_eq!(outcome.appended_events.len(), 1);
+    assert_eq!(outcome.barriers[0].floor_granted, Some(AgentId::Gpt));
+    assert_eq!(council.room().event_log.len(), 1);
+    // GPT never spoke, so the next contention must still start at GPT.
+    let next = council.submit_human("again").await.unwrap();
+    assert_eq!(next.barriers[0].floor_granted, Some(AgentId::Gpt));
 }
 
 #[tokio::test]

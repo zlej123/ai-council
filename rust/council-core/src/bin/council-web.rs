@@ -38,6 +38,10 @@ struct UiBarrier {
 struct UiCycle {
     barriers: Vec<UiBarrier>,
     stop: String,
+    /// Id of the last event this cycle appended; the page inserts the
+    /// control trace right after that event.
+    #[serde(default)]
+    last_event_id: u64,
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -87,6 +91,7 @@ enum Command {
     Message {
         text: String,
         target: Option<AgentId>,
+        cancel: Arc<Notify>,
     },
     Rate(u8, Option<String>),
     Reset {
@@ -101,8 +106,34 @@ enum Command {
 struct App {
     ui: RwLock<UiState>,
     commands: mpsc::Sender<Command>,
-    stop: Notify,
+    /// Cancel token of the cycle currently running (or queued). Created per
+    /// message so a stale stop can never cancel a later cycle, and
+    /// `notify_one` stores a permit so an early stop is never lost.
+    cancel: RwLock<Option<Arc<Notify>>>,
     outputs_dir: PathBuf,
+}
+
+fn metrics_value(council: &Council) -> serde_json::Value {
+    serde_json::to_value(council.metrics_report()).unwrap_or(serde_json::Value::Null)
+}
+
+fn roster_names(council: &Council) -> Vec<String> {
+    council.roster().iter().map(ToString::to_string).collect()
+}
+
+/// Puts a freshly built council in front of the UI: clears the old view and
+/// publishes the new roster, models, metrics, and transcript name.
+fn install_council(ui: &mut UiState, council: &Council, session_base: &str, max_ai_streak: u64) {
+    ui.roster = roster_names(council);
+    ui.models = seat_models(council);
+    ui.events.clear();
+    ui.cycles.clear();
+    ui.usage.clear();
+    ui.progress.clear();
+    ui.metrics = metrics_value(council);
+    ui.transcript = format!("{session_base}.md");
+    ui.max_ai_streak = max_ai_streak;
+    ui.last_error = None;
 }
 
 #[derive(Deserialize)]
@@ -199,6 +230,11 @@ fn ui_cycle(outcome: &CycleOutcome) -> UiCycle {
             })
             .collect(),
         stop: outcome.stop_reason.to_string(),
+        last_event_id: outcome
+            .appended_events
+            .last()
+            .map(|event| event.id)
+            .unwrap_or(0),
     }
 }
 
@@ -221,9 +257,15 @@ fn safe_session_file(name: &str) -> Option<String> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let (provider, agents, max_ai_streak, port) = parse_options()?;
+    let options = parse_options()?;
+    let (provider, max_ai_streak, port) = (options.provider, options.max_ai_streak, options.port);
     let (usage_tx, mut usage_rx) = mpsc::unbounded_channel::<UsageSample>();
-    let seats: Vec<AgentSpec> = agents.iter().copied().map(AgentSpec::defaults).collect();
+    let seats: Vec<AgentSpec> = options
+        .agents
+        .iter()
+        .copied()
+        .map(AgentSpec::defaults)
+        .collect();
     let mut council = Council::new(
         build_adapters_with(provider, &seats, Some(&usage_tx))?,
         max_ai_streak,
@@ -234,27 +276,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let outputs_dir = outputs_dir.canonicalize()?;
     let mut session_base = format!("web-session-{}", now_unix());
 
-    let ui = UiState {
+    let mut ui = UiState {
         provider: provider.label().to_owned(),
-        roster: council.roster().iter().map(ToString::to_string).collect(),
+        roster: Vec::new(),
         events: Vec::new(),
         cycles: Vec::new(),
-        metrics: serde_json::to_value(council.metrics_report())?,
+        metrics: serde_json::Value::Null,
         busy: false,
         last_error: None,
-        transcript: format!("{session_base}.md"),
+        transcript: String::new(),
         usage: BTreeMap::new(),
         max_ai_streak,
         progress: BTreeMap::new(),
         budget: Budget::default(),
-        models: seat_models(&council),
+        models: BTreeMap::new(),
     };
+    install_council(&mut ui, &council, &session_base, max_ai_streak);
 
     let (command_tx, mut command_rx) = mpsc::channel::<Command>(16);
     let app = Arc::new(App {
         ui: RwLock::new(ui),
         commands: command_tx,
-        stop: Notify::new(),
+        cancel: RwLock::new(None),
         outputs_dir: outputs_dir.clone(),
     });
 
@@ -319,31 +362,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let provider_label = provider.label();
     tokio::spawn(async move {
         let mut cycles: Vec<CycleOutcome> = Vec::new();
-        let mut current_seats = seats;
         let mut current_streak = max_ai_streak;
 
         while let Some(command) = command_rx.recv().await {
             match command {
-                Command::Message { text, target } => {
-                    let result = tokio::select! {
-                        result = council.submit_human_directed(text, target) => Some(result),
-                        _ = council_app.stop.notified() => None,
-                    };
+                Command::Message {
+                    text,
+                    target,
+                    cancel,
+                } => {
+                    let result = council
+                        .submit_human_cancellable(text, target, Some(cancel))
+                        .await;
+                    *council_app.cancel.write().await = None;
                     let mut ui = council_app.ui.write().await;
                     match result {
-                        Some(Ok(outcome)) => {
+                        Ok(outcome) => {
                             ui.cycles.push(ui_cycle(&outcome));
                             ui.last_error = None;
                             cycles.push(outcome);
                         }
-                        Some(Err(error)) => ui.last_error = Some(error.to_string()),
-                        None => {
-                            ui.last_error =
-                                Some("심의를 중단했다. 이미 커밋된 발언은 유지된다.".to_owned());
-                        }
+                        Err(error) => ui.last_error = Some(error.to_string()),
                     }
-                    ui.metrics = serde_json::to_value(council.metrics_report())
-                        .unwrap_or(serde_json::Value::Null);
+                    ui.metrics = metrics_value(&council);
                     ui.progress.clear();
                     ui.busy = false;
                     drop(ui);
@@ -361,8 +402,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     let mut ui = council_app.ui.write().await;
                     match outcome {
                         Ok(()) => {
-                            ui.metrics = serde_json::to_value(council.metrics_report())
-                                .unwrap_or(serde_json::Value::Null);
+                            ui.metrics = metrics_value(&council);
                             ui.last_error = None;
                         }
                         Err(error) => ui.last_error = Some(error.to_owned()),
@@ -381,8 +421,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     seats: next_seats,
                     max_ai_streak,
                 } => {
-                    let rebuilt = build_adapters_with(provider, &next_seats, Some(&usage_tx))
-                        .and_then(|adapters| Council::new(adapters, max_ai_streak));
+                    let rebuilt =
+                        build_council_blocking(provider, next_seats, max_ai_streak, &usage_tx)
+                            .await;
                     let mut ui = council_app.ui.write().await;
                     match rebuilt {
                         Ok(mut next) => {
@@ -390,54 +431,39 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             next.set_progress_sink(progress_tx.clone());
                             council = next;
                             cycles.clear();
-                            current_seats = next_seats;
                             current_streak = max_ai_streak;
                             session_base = format!("web-session-{}", now_unix());
-                            ui.roster = council.roster().iter().map(ToString::to_string).collect();
-                            ui.models = seat_models(&council);
-                            ui.events.clear();
-                            ui.cycles.clear();
-                            ui.usage.clear();
-                            ui.progress.clear();
-                            ui.metrics = serde_json::to_value(council.metrics_report())
-                                .unwrap_or(serde_json::Value::Null);
-                            ui.transcript = format!("{session_base}.md");
-                            ui.max_ai_streak = max_ai_streak;
-                            ui.last_error = None;
+                            install_council(&mut ui, &council, &session_base, max_ai_streak);
                         }
-                        Err(error) => ui.last_error = Some(error.to_string()),
+                        Err(error) => ui.last_error = Some(error),
                     }
                     ui.busy = false;
                 }
                 Command::Resume { file } => {
-                    let resumed = resume_council(
-                        &council_app.outputs_dir,
-                        &file,
-                        provider,
-                        &current_seats,
-                        current_streak,
-                        &usage_tx,
-                        &event_tx,
-                        &progress_tx,
-                    );
+                    let loaded = load_session(&council_app.outputs_dir, &file);
+                    let rebuilt = match loaded {
+                        Ok((seats, events)) => {
+                            build_council_blocking(provider, seats, current_streak, &usage_tx)
+                                .await
+                                .map(|council| (council, events))
+                        }
+                        Err(error) => Err(error),
+                    };
+                    // Hold the UI lock across install + seed so the seeded
+                    // events (delivered via the event sink) can only land
+                    // after the old view is cleared.
                     let mut ui = council_app.ui.write().await;
-                    match resumed {
-                        Ok(next) => {
-                            // The seeded events arrive through the event sink;
-                            // clear the old view first so they land in order.
-                            ui.events.clear();
-                            ui.cycles.clear();
-                            ui.usage.clear();
-                            ui.progress.clear();
+                    match rebuilt {
+                        Ok((mut next, events)) => {
+                            next.set_event_sink(event_tx.clone());
+                            next.set_progress_sink(progress_tx.clone());
                             council = next;
                             cycles.clear();
                             session_base = format!("web-session-{}", now_unix());
-                            ui.roster = council.roster().iter().map(ToString::to_string).collect();
-                            ui.models = seat_models(&council);
-                            ui.metrics = serde_json::to_value(council.metrics_report())
-                                .unwrap_or(serde_json::Value::Null);
-                            ui.transcript = format!("{session_base}.md");
-                            ui.last_error = None;
+                            install_council(&mut ui, &council, &session_base, current_streak);
+                            if let Err(error) = council.seed_room(events) {
+                                ui.last_error = Some(error.to_string());
+                            }
                         }
                         Err(error) => ui.last_error = Some(error),
                     }
@@ -503,41 +529,60 @@ async fn save_session(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn resume_council(
-    outputs_dir: &std::path::Path,
-    file: &str,
+/// Builds adapters (which probe CLI logins with blocking subprocess calls)
+/// off the async runtime.
+async fn build_council_blocking(
     provider: ProviderKind,
-    seats: &[AgentSpec],
+    seats: Vec<AgentSpec>,
     max_ai_streak: u64,
     usage_tx: &mpsc::UnboundedSender<UsageSample>,
-    event_tx: &mpsc::UnboundedSender<RoomEvent>,
-    progress_tx: &mpsc::UnboundedSender<Progress>,
 ) -> Result<Council, String> {
+    let usage_tx = usage_tx.clone();
+    tokio::task::spawn_blocking(move || {
+        build_adapters_with(provider, &seats, Some(&usage_tx))
+            .and_then(|adapters| Council::new(adapters, max_ai_streak))
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("council build task failed: {error}"))?
+}
+
+/// Reads a saved session and returns the roster it was recorded with (as
+/// default seats) plus its events, ready for `Council::seed_room`.
+fn load_session(
+    outputs_dir: &std::path::Path,
+    file: &str,
+) -> Result<(Vec<AgentSpec>, Vec<RoomEvent>), String> {
     let file = safe_session_file(file).ok_or("잘못된 세션 파일 이름")?;
     let raw = std::fs::read_to_string(outputs_dir.join(&file))
         .map_err(|error| format!("세션 파일을 읽지 못했다: {error}"))?;
     let record: SessionRecord =
         serde_json::from_str(&raw).map_err(|error| format!("세션 파일 형식 오류: {error}"))?;
+    let mut seats = Vec::new();
+    for name in &record.roster {
+        let agent = AgentId::parse(&name.to_ascii_lowercase())
+            .ok_or(format!("알 수 없는 참가자: {name}"))?;
+        seats.push(AgentSpec::defaults(agent));
+    }
+    if seats.len() < 2 {
+        return Err("저장된 세션의 참가자가 2명 미만이다".to_owned());
+    }
     let mut events = Vec::new();
     for event in record.events {
         let author =
             parse_author(&event.author).ok_or(format!("알 수 없는 화자: {}", event.author))?;
+        if let Author::Agent(agent) = author
+            && !seats.iter().any(|seat| seat.agent == agent)
+        {
+            return Err(format!("{agent}의 발언이 있지만 저장된 참가자 목록에 없다"));
+        }
         events.push(RoomEvent {
             id: event.id,
             author,
             content: event.content,
         });
     }
-    let adapters =
-        build_adapters_with(provider, seats, Some(usage_tx)).map_err(|error| error.to_string())?;
-    let mut council = Council::new(adapters, max_ai_streak).map_err(|error| error.to_string())?;
-    council.set_event_sink(event_tx.clone());
-    council.set_progress_sink(progress_tx.clone());
-    council
-        .seed_room(events)
-        .map_err(|error| error.to_string())?;
-    Ok(council)
+    Ok((seats, events))
 }
 
 async fn get_state(State(app): State<Arc<App>>) -> Json<UiState> {
@@ -592,10 +637,13 @@ async fn post_message(
         }
         ui.busy = true;
     }
+    let cancel = Arc::new(Notify::new());
+    *app.cancel.write().await = Some(Arc::clone(&cancel));
     app.commands
         .send(Command::Message {
             text: body.text,
             target,
+            cancel,
         })
         .await
         .map_err(task_stopped)?;
@@ -603,7 +651,9 @@ async fn post_message(
 }
 
 async fn post_stop(State(app): State<Arc<App>>) -> StatusCode {
-    app.stop.notify_waiters();
+    if let Some(cancel) = app.cancel.read().await.as_ref() {
+        cancel.notify_one();
+    }
     StatusCode::ACCEPTED
 }
 
@@ -768,7 +818,12 @@ fn task_stopped<T>(_: T) -> (StatusCode, String) {
     )
 }
 
-type Options = (ProviderKind, Vec<AgentId>, u64, u16);
+struct Options {
+    provider: ProviderKind,
+    agents: Vec<AgentId>,
+    max_ai_streak: u64,
+    port: u16,
+}
 
 fn parse_options() -> Result<Options, Box<dyn Error>> {
     let mut provider = ProviderKind::Subscription;
@@ -790,12 +845,7 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
                 let value = arguments
                     .next()
                     .ok_or("--agents needs a comma-separated list, e.g. gpt,claude,gemini,grok")?;
-                agents = value
-                    .split(',')
-                    .map(|name| {
-                        AgentId::parse(name).ok_or_else(|| format!("unknown agent: {name}"))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                agents = AgentId::parse_list(&value)?;
             }
             "--max-ai-streak" => {
                 max_ai_streak = arguments
@@ -816,5 +866,10 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
         }
     }
 
-    Ok((provider, agents, max_ai_streak, port))
+    Ok(Options {
+        provider,
+        agents,
+        max_ai_streak,
+        port,
+    })
 }

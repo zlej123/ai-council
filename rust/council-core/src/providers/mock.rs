@@ -5,16 +5,22 @@ use crate::model::{AgentId, Author, Intent, RoomEvent, RoomSnapshot};
 
 pub struct MockAdapter {
     id: AgentId,
-}
-
-/// The agent one place later in the fixed order, if any.
-fn follows(author: AgentId) -> Option<AgentId> {
-    AgentId::ORDER.get(author.index() + 1).copied()
+    roster: Vec<AgentId>,
 }
 
 impl MockAdapter {
-    pub const fn new(id: AgentId) -> Self {
-        Self { id }
+    /// `roster` is the session's full AI roster so the deterministic
+    /// follow-up rule works for any subset of the fixed order.
+    pub fn new(id: AgentId, roster: &[AgentId]) -> Self {
+        let mut roster: Vec<AgentId> = roster.to_vec();
+        roster.sort();
+        Self { id, roster }
+    }
+
+    /// The roster member one place after `author`, if any.
+    fn follows(&self, author: AgentId) -> Option<AgentId> {
+        let position = self.roster.iter().position(|agent| *agent == author)?;
+        self.roster.get(position + 1).copied()
     }
 }
 
@@ -28,13 +34,22 @@ impl AgentAdapter for MockAdapter {
         self.id
     }
 
-    async fn evaluate(&self, _room: &RoomSnapshot, event: &RoomEvent) -> CouncilResult<Intent> {
+    async fn evaluate(&self, room: &RoomSnapshot, event: &RoomEvent) -> CouncilResult<Intent> {
         // Deterministic demo: everyone wants the human's opening, and exactly
-        // the next agent in the fixed order follows up one AI speech, so every
-        // roster produces one contention, one follow-up, then quiescence.
+        // the next roster member follows up the FIRST AI speech of the turn,
+        // so every roster produces one contention, one follow-up, then
+        // quiescence.
+        let ai_speeches_this_turn = room
+            .events
+            .iter()
+            .rev()
+            .take_while(|event| event.author != Author::You)
+            .count();
         let intent = match event.author {
             Author::You => Intent::request_floor(event.id, "mock human-turn contribution"),
-            Author::Agent(author) if follows(author) == Some(self.id) => {
+            Author::Agent(author)
+                if ai_speeches_this_turn == 1 && self.follows(author) == Some(self.id) =>
+            {
                 Intent::request_floor(event.id, "mock follow-up contribution")
             }
             Author::Agent(_) => Intent::pass(event.id),

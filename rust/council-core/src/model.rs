@@ -25,6 +25,13 @@ impl AgentId {
         }
     }
 
+    /// Parses a comma-separated roster such as `gpt,claude,grok`.
+    pub fn parse_list(list: &str) -> Result<Vec<Self>, String> {
+        list.split(',')
+            .map(|name| Self::parse(name).ok_or_else(|| format!("unknown agent: {name}")))
+            .collect()
+    }
+
     pub fn parse(name: &str) -> Option<Self> {
         match name.trim().to_ascii_lowercase().as_str() {
             "gpt" => Some(Self::Gpt),

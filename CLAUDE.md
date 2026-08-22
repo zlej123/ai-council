@@ -9,7 +9,11 @@ AI Council — 사람 + 여러 AI(GPT/Claude/Gemini/Grok)가 발언권 중재만
 - Rust workspace는 `rust/` 아래에 있다 (`rust/council-core`).
 - `src/`(레포 루트)는 Rust 코드가 아니라 공유 계약 파일이다: `intent.schema.json`,
   `council_rules.txt` — 두 파일 모두 `include_str!`로 바이너리에 들어간다.
-- `outputs/`는 세션 transcript 저장 위치. 품질 검토에 쓴 세션만 커밋한다.
+- `outputs/`는 세션 transcript 저장 위치. 품질 검토에 쓴 세션만 커밋한다. 웹 UI 세션
+  (`web-session-*`)은 .gitignore로 기본 제외되므로 검토용은 `git add -f`로 올린다.
+- 바이너리는 둘: `council-core`(CLI spike, 기본 `--provider mock`)와 `council-web`
+  (로컬 웹 UI, 기본 `--provider subscription --agents claude,gemini,grok` — **기본값이
+  구독 한도를 소비한다**; 무료로 보려면 `--provider mock`).
 
 ## 검증 (레포 루트에서)
 
@@ -20,9 +24,10 @@ cd rust && cargo clippy --workspace --all-targets -- -D warnings && cargo test -
 
 ## 실행 모드
 
-- `--provider mock` (기본): 무료, 네트워크 없음. 프로토콜 확인용.
-- `--provider subscription`: 로컬 `codex` + `claude` CLI를 구독 로그인으로 호출.
-  **구독 한도를 소비한다** — 한도 초과 시 barrier가 fail-closed로 멈추는 것이 정상이다.
+- `--provider mock` (CLI 기본값): 무료, 네트워크 없음. 프로토콜·UI 확인용.
+- `--provider subscription`: 로컬 `codex`(GPT) · `claude` · `agy`(Antigravity=Gemini) ·
+  `grok` CLI를 각자의 구독 로그인으로 호출. **구독 한도를 소비한다** — 한도 초과 시
+  barrier가 fail-closed로 멈추는 것이 정상이다.
 - `--provider live`: `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` 종량제. 명시하지 않으면 절대
   호출되지 않는다.
 

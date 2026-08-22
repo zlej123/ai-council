@@ -8,6 +8,7 @@ pub use mock::MockAdapter;
 pub use openai::OpenAiAdapter;
 pub use subscription::{
     AntigravityCliAdapter, ClaudeCliAdapter, CodexCliAdapter, GrokCliAdapter, check_subscription,
+    cli_binary,
 };
 
 use std::sync::Arc;
@@ -86,39 +87,25 @@ pub fn build_adapters_with(
     specs: &[AgentSpec],
     usage_sink: Option<&tokio::sync::mpsc::UnboundedSender<UsageSample>>,
 ) -> CouncilResult<Vec<Arc<dyn AgentAdapter>>> {
+    let roster: Vec<AgentId> = specs.iter().map(|spec| spec.agent).collect();
     let mut adapters: Vec<Arc<dyn AgentAdapter>> = Vec::new();
     for spec in specs {
         let model = spec.model.clone();
         let effort = spec.effort.clone();
+        let sink = usage_sink.cloned();
         let adapter: Arc<dyn AgentAdapter> = match (kind, spec.agent) {
-            (ProviderKind::Mock, agent) => Arc::new(MockAdapter::new(agent)),
+            (ProviderKind::Mock, agent) => Arc::new(MockAdapter::new(agent, &roster)),
             (ProviderKind::Subscription, AgentId::Gpt) => {
-                let mut adapter = CodexCliAdapter::with_config(model, effort)?;
-                if let Some(sink) = usage_sink {
-                    adapter.set_usage_sink(sink.clone());
-                }
-                Arc::new(adapter)
+                Arc::new(CodexCliAdapter::with_config(model, effort, sink)?)
             }
             (ProviderKind::Subscription, AgentId::Claude) => {
-                let mut adapter = ClaudeCliAdapter::with_config(model, effort)?;
-                if let Some(sink) = usage_sink {
-                    adapter.set_usage_sink(sink.clone());
-                }
-                Arc::new(adapter)
+                Arc::new(ClaudeCliAdapter::with_config(model, effort, sink)?)
             }
             (ProviderKind::Subscription, AgentId::Gemini) => {
-                let mut adapter = AntigravityCliAdapter::with_config(model, effort)?;
-                if let Some(sink) = usage_sink {
-                    adapter.set_usage_sink(sink.clone());
-                }
-                Arc::new(adapter)
+                Arc::new(AntigravityCliAdapter::with_config(model, effort, sink)?)
             }
             (ProviderKind::Subscription, AgentId::Grok) => {
-                let mut adapter = GrokCliAdapter::with_config(model, effort)?;
-                if let Some(sink) = usage_sink {
-                    adapter.set_usage_sink(sink.clone());
-                }
-                Arc::new(adapter)
+                Arc::new(GrokCliAdapter::with_config(model, effort, sink)?)
             }
             (ProviderKind::Live, AgentId::Gpt) => Arc::new(OpenAiAdapter::from_env()?),
             (ProviderKind::Live, AgentId::Claude) => Arc::new(AnthropicAdapter::from_env()?),

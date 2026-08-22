@@ -50,7 +50,7 @@ cargo run --manifest-path rust/Cargo.toml -p council-core -- \
   --check-providers
 ```
 
-이 모드는 시작할 때 두 CLI의 로그인 방식을 검사하고, child process에서 `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`와 외부 cloud provider 변수를 제거한다. provider session은 저장하지 않으며 매 판단은 ephemeral/no-session-persistence 프로세스에서 전체 Room snapshot으로 다시 시작한다.
+이 모드는 시작할 때 각 참가 CLI의 로그인 방식을 검사하고, child process에서 `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`와 외부 cloud provider 변수를 제거한다. provider session은 저장하지 않으며 매 판단은 ephemeral/no-session-persistence 프로세스에서 전체 Room snapshot으로 다시 시작한다.
 
 선택 모델·effort (CLI가 지원하는 항목만):
 
@@ -91,8 +91,8 @@ export ANTHROPIC_MODEL="claude-sonnet-4-6"
 
 ```text
 commit RoomEvent
-  → GPT/Claude가 immutable Room snapshot 처리
-  → Listening Barrier (둘 다 last_heard_event 갱신)
+  → 참가 AI 전원이 immutable Room snapshot 처리
+  → Listening Barrier (전원의 last_heard_event 갱신)
   → PASS / REQUEST_FLOOR
   → requester가 있으면 round-robin floor
   → 한 AI만 speak
@@ -102,7 +102,7 @@ commit RoomEvent
 
 - `Room.event_log`와 `AgentState`만 source of truth다.
 - OpenAI Responses API의 response id나 Claude provider session을 보관하지 않는다.
-- 사람 event는 GPT와 Claude를 병렬 호출한다.
+- 사람 event는 참가 AI 전원을 병렬 호출한다.
 - AI event의 저자는 sync-only, 다른 AI는 새 inference를 한다.
 - barrier 중 한 provider라도 실패하면 fail closed하고 아무에게도 발언권을 주지 않는다.
 - 동시 요청은 고정 순서의 round-robin만 사용하며 내용, confidence, latency를 보지 않는다.
@@ -147,8 +147,8 @@ cargo run --manifest-path rust/Cargo.toml -p council-core --bin council-web
 - **심의 진행 상황** — 각 AI의 판단(생각 중 → PASS/REQUEST → 발언 작성 중)이 실시간 칩으로 표시된다.
 - **REQUEST_FLOOR 이유** — 발언권을 요청한 AI의 내부 이유가 control trace 아래 `↳`로 표시되고 transcript에도 저장된다.
 - **지목 발언** — "전체에게" 대신 특정 AI를 골라 물으면 그 사이클의 첫 발언권이 그 AI에게 간다 (EXPERIMENT.md §4의 사람 우선 규칙 확장).
-- **중단** — 심의 중 중단 버튼으로 취소한다. 이미 커밋된 발언은 유지된다.
-- **기록** — 지난 세션(JSON sidecar)을 열람하고, "이 대화 이어가기"로 그 방을 현재 참가자 구성으로 복원한다.
+- **중단** — 심의 중 중단 버튼으로 취소한다. 사이클은 `CANCELLED`로 기록되고, 이미 커밋된 발언은 유지되며 round-robin 순서는 실제로 말한 AI에 대해서만 전진한다.
+- **기록** — 지난 세션(JSON sidecar)을 열람하고, "이 대화 이어가기"로 그 방을 **저장된 참가자 구성 그대로** 새 방에 시드해 이어간다.
 
 설정 패널(우상단)에서:
 
@@ -161,7 +161,7 @@ cargo run --manifest-path rust/Cargo.toml -p council-core --bin council-web
 
 | 항목 | 상태 |
 | --- | --- |
-| fmt / clippy(-D warnings) / 테스트 9개 | 통과 |
+| fmt / clippy(-D warnings) / 테스트 15개 | 통과 |
 | mock 전체 루프 + transcript 저장 | 통과 |
 | 구독 인증 사전점검 (`--check-providers`) | 통과 |
 | GPT 구독 adapter 실제 판단 | 2026-08-21 Codex 세션에서 통과 |

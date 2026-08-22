@@ -18,17 +18,29 @@ use super::{UsageSample, parse_decision};
 
 type UsageSink = tokio::sync::mpsc::UnboundedSender<UsageSample>;
 
+/// The CLI executable for one seat, overridable per seat via env.
+pub fn cli_binary(agent: AgentId) -> String {
+    let (variable, default) = match agent {
+        AgentId::Gpt => ("CODEX_CLI_BIN", "codex"),
+        AgentId::Claude => ("CLAUDE_CLI_BIN", "claude"),
+        AgentId::Gemini => ("ANTIGRAVITY_CLI_BIN", "agy"),
+        AgentId::Grok => ("GROK_CLI_BIN", "grok"),
+    };
+    std::env::var(variable).unwrap_or_else(|_| default.to_owned())
+}
+
 fn report_usage(sink: &Option<UsageSink>, agent: AgentId, value: &Value) {
     let Some(sink) = sink else { return };
     let usage = value.get("usage").unwrap_or(&Value::Null);
     let read = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+    // Claude and Grok report cache reads/creations on top of input_tokens
+    // (additive); Codex `cached_input_tokens` and Antigravity
+    // `cache_read_tokens` are subsets of input_tokens and must not be added.
     let _ = sink.send(UsageSample {
         agent,
         input_tokens: read("input_tokens")
             + read("cache_read_input_tokens")
-            + read("cache_creation_input_tokens")
-            + read("cached_input_tokens")
-            + read("cache_read_tokens"),
+            + read("cache_creation_input_tokens"),
         output_tokens: read("output_tokens"),
         cost_usd: value
             .get("total_cost_usd")
@@ -49,19 +61,15 @@ pub struct CodexCliAdapter {
 }
 
 impl CodexCliAdapter {
-    pub fn set_usage_sink(&mut self, sink: UsageSink) {
-        self.usage_sink = Some(sink);
-    }
-
-    pub fn subscription() -> CouncilResult<Self> {
-        Self::with_config(None, None)
-    }
-
-    pub fn with_config(model: Option<String>, effort: Option<String>) -> CouncilResult<Self> {
-        let binary = std::env::var("CODEX_CLI_BIN").unwrap_or_else(|_| "codex".to_owned());
+    pub fn with_config(
+        model: Option<String>,
+        effort: Option<String>,
+        usage_sink: Option<UsageSink>,
+    ) -> CouncilResult<Self> {
+        let binary = cli_binary(AgentId::Gpt);
         verify_codex_subscription(&binary)?;
         Ok(Self {
-            usage_sink: None,
+            usage_sink,
             binary,
             model: model.or_else(|| std::env::var("CODEX_SUBSCRIPTION_MODEL").ok()),
             effort: effort.or_else(|| std::env::var("CODEX_SUBSCRIPTION_EFFORT").ok()),
@@ -142,21 +150,17 @@ pub struct ClaudeCliAdapter {
 }
 
 impl ClaudeCliAdapter {
-    pub fn set_usage_sink(&mut self, sink: UsageSink) {
-        self.usage_sink = Some(sink);
-    }
-
-    pub fn subscription() -> CouncilResult<Self> {
-        Self::with_config(None, None)
-    }
-
     /// The Claude CLI has no reasoning-effort flag; `_effort` is accepted for
     /// signature uniformity and ignored.
-    pub fn with_config(model: Option<String>, _effort: Option<String>) -> CouncilResult<Self> {
-        let binary = std::env::var("CLAUDE_CLI_BIN").unwrap_or_else(|_| "claude".to_owned());
+    pub fn with_config(
+        model: Option<String>,
+        _effort: Option<String>,
+        usage_sink: Option<UsageSink>,
+    ) -> CouncilResult<Self> {
+        let binary = cli_binary(AgentId::Claude);
         verify_claude_subscription(&binary)?;
         Ok(Self {
-            usage_sink: None,
+            usage_sink,
             binary,
             model: model
                 .or_else(|| std::env::var("CLAUDE_SUBSCRIPTION_MODEL").ok())
@@ -238,19 +242,15 @@ pub struct GrokCliAdapter {
 }
 
 impl GrokCliAdapter {
-    pub fn set_usage_sink(&mut self, sink: UsageSink) {
-        self.usage_sink = Some(sink);
-    }
-
-    pub fn subscription() -> CouncilResult<Self> {
-        Self::with_config(None, None)
-    }
-
-    pub fn with_config(model: Option<String>, effort: Option<String>) -> CouncilResult<Self> {
-        let binary = std::env::var("GROK_CLI_BIN").unwrap_or_else(|_| "grok".to_owned());
+    pub fn with_config(
+        model: Option<String>,
+        effort: Option<String>,
+        usage_sink: Option<UsageSink>,
+    ) -> CouncilResult<Self> {
+        let binary = cli_binary(AgentId::Grok);
         verify_grok_subscription(&binary)?;
         Ok(Self {
-            usage_sink: None,
+            usage_sink,
             binary,
             model: model.or_else(|| std::env::var("GROK_SUBSCRIPTION_MODEL").ok()),
             effort: effort.or_else(|| std::env::var("GROK_SUBSCRIPTION_EFFORT").ok()),
@@ -263,12 +263,9 @@ impl GrokCliAdapter {
         prompt: String,
         structured: bool,
     ) -> CouncilResult<String> {
-        // Grok's agentic runtime may spend turns on read-only tools even in
-        // plan mode, so tools are banned in the rules and a small turn budget
-        // is left for the final message.
-        let rules = format!(
-            "{rules}\nDo not use any tools, do not read or create files, and reply with text only."
-        );
+        // Grok's agentic runtime may still try read-only tools in plan mode
+        // (council rule 9 bans them), so a small turn budget is left for the
+        // final message.
         let mut command = Command::new(&self.binary);
         command
             .arg("--single")
@@ -342,19 +339,15 @@ pub struct AntigravityCliAdapter {
 }
 
 impl AntigravityCliAdapter {
-    pub fn set_usage_sink(&mut self, sink: UsageSink) {
-        self.usage_sink = Some(sink);
-    }
-
-    pub fn subscription() -> CouncilResult<Self> {
-        Self::with_config(None, None)
-    }
-
-    pub fn with_config(model: Option<String>, effort: Option<String>) -> CouncilResult<Self> {
-        let binary = std::env::var("ANTIGRAVITY_CLI_BIN").unwrap_or_else(|_| "agy".to_owned());
+    pub fn with_config(
+        model: Option<String>,
+        effort: Option<String>,
+        usage_sink: Option<UsageSink>,
+    ) -> CouncilResult<Self> {
+        let binary = cli_binary(AgentId::Gemini);
         verify_antigravity_subscription(&binary)?;
         Ok(Self {
-            usage_sink: None,
+            usage_sink,
             binary,
             model: model
                 .or_else(|| std::env::var("GEMINI_SUBSCRIPTION_MODEL").ok())
@@ -400,10 +393,9 @@ impl AgentAdapter for AntigravityCliAdapter {
 
     async fn evaluate(&self, room: &RoomSnapshot, event: &RoomEvent) -> CouncilResult<Intent> {
         // The Antigravity CLI has no system-prompt flag, so instructions and
-        // input travel in one prompt, and the agentic runtime is told
-        // explicitly to stay tool-less.
+        // input travel in one prompt.
         let prompt = format!(
-            "{}\nDo not use any tools, do not create or edit files, and reply with text only.\n\n{}",
+            "{}\n\n{}",
             evaluation_instructions(self.id()),
             evaluation_input(room)
         );
@@ -413,7 +405,7 @@ impl AgentAdapter for AntigravityCliAdapter {
 
     async fn speak(&self, room: &RoomSnapshot, _intent: &Intent) -> CouncilResult<String> {
         let prompt = format!(
-            "{}\nDo not use any tools, do not create or edit files, and reply with text only.\n\n{}",
+            "{}\n\n{}",
             speaking_instructions(self.id()),
             speaking_input(room)
         );
@@ -467,19 +459,12 @@ async fn run_child(mut command: Command, prompt: String, agent: AgentId) -> Coun
 
 /// Checks the CLI login for one agent without calling any model.
 pub fn check_subscription(agent: AgentId) -> CouncilResult<()> {
+    let binary = cli_binary(agent);
     match agent {
-        AgentId::Gpt => verify_codex_subscription(
-            &std::env::var("CODEX_CLI_BIN").unwrap_or_else(|_| "codex".to_owned()),
-        ),
-        AgentId::Claude => verify_claude_subscription(
-            &std::env::var("CLAUDE_CLI_BIN").unwrap_or_else(|_| "claude".to_owned()),
-        ),
-        AgentId::Gemini => verify_antigravity_subscription(
-            &std::env::var("ANTIGRAVITY_CLI_BIN").unwrap_or_else(|_| "agy".to_owned()),
-        ),
-        AgentId::Grok => verify_grok_subscription(
-            &std::env::var("GROK_CLI_BIN").unwrap_or_else(|_| "grok".to_owned()),
-        ),
+        AgentId::Gpt => verify_codex_subscription(&binary),
+        AgentId::Claude => verify_claude_subscription(&binary),
+        AgentId::Gemini => verify_antigravity_subscription(&binary),
+        AgentId::Grok => verify_grok_subscription(&binary),
     }
 }
 

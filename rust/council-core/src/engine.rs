@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
 
 use crate::adapter::{AgentAdapter, CouncilError, CouncilResult};
 use crate::metrics::{Metrics, MetricsReport};
@@ -51,6 +52,7 @@ pub enum Progress {
 pub enum StopReason {
     Quiescent,
     AiStreakLimit,
+    Cancelled,
 }
 
 impl fmt::Display for StopReason {
@@ -58,7 +60,18 @@ impl fmt::Display for StopReason {
         match self {
             Self::Quiescent => formatter.write_str("QUIESCENT"),
             Self::AiStreakLimit => formatter.write_str("AI_STREAK_LIMIT"),
+            Self::Cancelled => formatter.write_str("CANCELLED"),
         }
+    }
+}
+
+/// Resolves when a cancellation has been requested; never resolves when no
+/// token was supplied. A permit stored by `notify_one` before the cycle
+/// starts also counts, so a stop pressed early is not lost.
+async fn cancelled(cancel: Option<&Arc<Notify>>) {
+    match cancel {
+        Some(notify) => notify.notified().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -202,6 +215,20 @@ impl Council {
         content: impl Into<String>,
         directed: Option<AgentId>,
     ) -> CouncilResult<CycleOutcome> {
+        self.submit_human_cancellable(content, directed, None).await
+    }
+
+    /// Like `submit_human_directed`, but the cycle stops with
+    /// `StopReason::Cancelled` as soon as `cancel` is notified. Cancellation
+    /// is a clean stop: committed events stay, the round-robin cursor only
+    /// moves when a speech actually commits, and the partial cycle is still
+    /// returned so traces and metrics stay consistent with the room.
+    pub async fn submit_human_cancellable(
+        &mut self,
+        content: impl Into<String>,
+        directed: Option<AgentId>,
+        cancel: Option<Arc<Notify>>,
+    ) -> CouncilResult<CycleOutcome> {
         let content = content.into();
         if content.trim().is_empty() {
             return Err(CouncilError::new("human event cannot be empty"));
@@ -220,7 +247,15 @@ impl Council {
         let mut directed = directed;
 
         let stop_reason = loop {
-            let mut trace = self.process_event(&current).await?;
+            let barrier = tokio::select! {
+                biased;
+                _ = cancelled(cancel.as_ref()) => None,
+                result = self.process_event(&current) => Some(result),
+            };
+            let Some(barrier) = barrier else {
+                break StopReason::Cancelled;
+            };
+            let mut trace = barrier?;
             let requesters = self.valid_requesters(current.id);
 
             if requesters.is_empty() && directed.is_none() {
@@ -233,10 +268,11 @@ impl Council {
             }
 
             // A directed grant bypasses round-robin once without moving the
-            // cursor; everything after it is ordinary arbitration.
-            let speaker = match directed.take() {
-                Some(target) => target,
-                None => self.select_requester(&requesters),
+            // cursor; everything after it is ordinary arbitration. The cursor
+            // only advances once the granted speech actually commits.
+            let (speaker, next_cursor) = match directed.take() {
+                Some(target) => (target, self.floor_cursor),
+                None => self.next_requester(&requesters),
             };
             trace.floor_granted = Some(speaker);
             barriers.push(trace);
@@ -248,13 +284,22 @@ impl Council {
             };
             let snapshot = self.room.snapshot();
             self.progress(Progress::Speaking { agent: speaker });
-            let speech = self.adapters[&speaker].speak(&snapshot, &intent).await?;
+            let speech = tokio::select! {
+                biased;
+                _ = cancelled(cancel.as_ref()) => None,
+                result = self.adapters[&speaker].speak(&snapshot, &intent) => Some(result),
+            };
+            let Some(speech) = speech else {
+                break StopReason::Cancelled;
+            };
+            let speech = speech?;
             if speech.trim().is_empty() {
                 return Err(CouncilError::new(format!(
                     "{speaker} produced an empty speech"
                 )));
             }
             current = self.commit_event(Author::Agent(speaker), speech);
+            self.floor_cursor = next_cursor;
             appended_events.push(current.clone());
             ai_streak += 1;
         };
@@ -407,15 +452,16 @@ impl Council {
             .collect()
     }
 
-    fn select_requester(&mut self, requesters: &[AgentId]) -> AgentId {
+    /// Round-robin pick plus the cursor value to adopt once that speaker's
+    /// speech commits. Callers must not move the cursor before the commit.
+    fn next_requester(&self, requesters: &[AgentId]) -> (AgentId, usize) {
         for offset in 0..self.roster.len() {
             let index = (self.floor_cursor + offset) % self.roster.len();
             let candidate = self.roster[index];
             if requesters.contains(&candidate) {
-                self.floor_cursor = (index + 1) % self.roster.len();
-                return candidate;
+                return (candidate, (index + 1) % self.roster.len());
             }
         }
-        unreachable!("select_requester is called with at least one roster agent")
+        unreachable!("next_requester is called with at least one roster agent")
     }
 }

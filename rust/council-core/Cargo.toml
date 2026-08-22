@@ -1,5 +1,6 @@
 [package]
 name = "council-core"
+default-run = "council-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -8,18 +8,18 @@
 
 성공은 기능 완성이 아니라 아래 관찰이 가능한 상태다.
 
-- 모든 `RoomEvent` 뒤에 두 `AgentState.last_heard_event`가 최신 event id에 도달한다.
-- 사람의 발언에는 GPT와 Claude를 **동시에 실제 호출**하여 각각 `PASS` 또는 `REQUEST_FLOOR`를 받는다.
-- AI 발언에는 다른 AI를 실제 호출하고, 발언한 AI는 자기 event를 동기화만 한다.
-- 둘 다 요청해도 내용·점수·응답 속도를 보지 않는 round-robin으로 한 명만 말한다.
+- 모든 `RoomEvent` 뒤에 참가 AI 전원의 `AgentState.last_heard_event`가 최신 event id에 도달한다.
+- 사람의 발언에는 참가 AI 전원을 **동시에 실제 호출**하여 각각 `PASS` 또는 `REQUEST_FLOOR`를 받는다.
+- AI 발언에는 나머지 AI를 실제 호출하고, 발언한 AI는 자기 event를 동기화만 한다.
+- 여럿이 요청해도 내용·점수·응답 속도를 보지 않는 round-robin으로 한 명만 말한다.
 - 새 발언이 commit되는 순간 이전 event에 근거한 모든 intent는 폐기된다.
 - PASS율, 동시 REQUEST율, AI 연속발언 길이와 사람의 자연스러움 평점을 한 세션에서 볼 수 있다.
 
 ## 2. 범위
 
-포함: 단일 in-memory room, You + 선택된 AI 로스터(GPT/Claude/Gemini/Grok), 텍스트 CLI, 병렬 listening barrier, provider별 adapter, 기계적 floor arbitration, 세션 지표, 결정론적 mock 실험, 구독 로그인 CLI 실험.
+포함: 단일 in-memory room, You + 선택된 AI 로스터(GPT/Claude/Gemini/Grok), 텍스트 CLI, 병렬 listening barrier, provider별 adapter, 기계적 floor arbitration, 세션 지표, 결정론적 mock 실험, 구독 로그인 CLI 실험, 사이클 취소.
 
-제외: UI, DB/복구, Judge/router, 장기·요약 memory, 음성, 도구 사용, 스트리밍, 인증, 다중 room, 비용 최적화, production retry/failover.
+제외(실험 계약): UI, DB/복구, Judge/router, 장기·요약 memory, 음성, 도구 사용, 스트리밍, 인증, 다중 room, 비용 최적화, production retry/failover. 단, 활용 레이어(README의 웹 UI)는 검토용 transcript 사본(JSON sidecar)으로 지난 방을 **다시 시드**(`Council::seed_room`)할 수 있다 — 이는 저장소를 source of truth로 삼는 복구가 아니라 새 in-memory room을 과거 event로 시작하는 것이며, 시드된 event는 listening barrier를 거치지 않고 다음 사람 발언에서 전원이 재평가한다.
 
 ## 3. Source of truth와 상태
 
@@ -31,13 +31,13 @@
 ## 4. 한 사이클의 프로토콜
 
 1. 발언을 다음 연속 id의 `RoomEvent`로 commit하고 기존 intent를 전부 지운다.
-2. immutable room snapshot을 두 adapter에 broadcast한다.
+2. immutable room snapshot을 참가 adapter 전원에 broadcast한다.
 3. 각 AI가 event를 처리한다. 저자가 아닌 AI는 provider inference로 `PASS/REQUEST_FLOOR`를 결정한다. AI 저자는 자기 event를 sync-only 처리한다.
-4. 두 `last_heard_event`가 모두 최신 id가 되어야 listening barrier가 완료된다. 하나라도 실패하면 **fail closed**: 발언권을 주지 않고 사용자에게 오류를 반환한다.
+4. 참가 AI 전원의 `last_heard_event`가 최신 id가 되어야 listening barrier가 완료된다. 하나라도 실패하면 **fail closed**: 발언권을 주지 않고 사용자에게 오류를 반환한다.
 5. 유효한 requester가 없으면 `QUIESCENT`로 사람을 기다린다.
 6. requester가 있으면 고정 순서 `[GPT, Claude, Gemini, Grok]`(참가 로스터로 filter)의 round-robin cursor만으로 한 명을 고른다. 의미, confidence, latency, provider는 사용하지 않는다. 예외는 하나다: **사람이 특정 AI를 지목한 발언**은 "사람이 우선한다" 규칙의 확장으로, 그 사이클의 첫 발언권을 지목된 AI에게 준다(cursor는 움직이지 않으며, 이후 발언권은 다시 일반 중재를 따른다). 이것은 사람의 명시적 지시이지 시스템의 내용 판단이 아니다.
 7. 선택된 adapter가 현재 room snapshot과 자기 intent를 받아 짧은 발언을 생성한다. commit 후 1번으로 돌아간다.
-8. 사용자 발언 하나 뒤 AI 발언이 3개에 도달하면 `AI_STREAK_LIMIT`로 멈춘다. 이는 제품 정책이 아니라 무한 루프를 막는 spike 안전장치다.
+8. 사용자 발언 하나 뒤 AI 발언이 3개에 도달하면 `AI_STREAK_LIMIT`로 멈춘다. 이는 제품 정책이 아니라 무한 루프를 막는 spike 안전장치다. 사용자가 사이클을 중단하면 `CANCELLED`로 멈추며, 이미 commit된 event는 유지되고 round-robin cursor는 실제로 commit된 발언에 대해서만 전진한다.
 
 ## 5. 모델 계약
 

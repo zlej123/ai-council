@@ -137,7 +137,7 @@ const log = document.getElementById('log'), text = document.getElementById('text
       errBox = document.getElementById('error'), settings = document.getElementById('settings'),
       histdrawer = document.getElementById('histdrawer'), viewer = document.getElementById('viewer'),
       stopBtn = document.getElementById('stop'), target = document.getElementById('target');
-let lastCount = -1, lastCycles = -1, wasBusy = false, viewerFile = null, MODELS = {};
+let lastCount = -1, lastCycles = -1, wasBusy = false, viewerFile = null, MODELS = {}, sending = false;
 
 const SEATS = [
   { id: 'gpt',    name: 'GPT',    models: ['gpt-5.3-codex', 'gpt-5.4'], hint: 'Codex CLI · ChatGPT 구독' },
@@ -177,24 +177,18 @@ function traceNode(c) {
   return t;
 }
 
-// events shown when cycle k ends = sum over cycles 0..k of (1 human + granted barriers)
-function cycleStop(cycles, k) {
-  let n = 0;
-  for (let i = 0; i <= k; i++) {
-    n += 1 + cycles[i].barriers.filter(b => !b.line.endsWith('floor=none')).length;
-  }
-  return n;
-}
-
+// Each cycle records the id of the last event it appended; the trace goes
+// right after that event, so seeded history, stops, and errors never shift it.
 function renderConversation(container, events, cycles) {
   container.innerHTML = '';
-  let cycleIdx = 0, shown = 0;
+  const traceAfter = new Map();
+  for (const c of cycles) {
+    if (c.last_event_id) traceAfter.set(c.last_event_id, c);
+  }
   for (const e of events) {
     container.append(msgNode(e));
-    shown++;
-    if (cycleIdx < cycles.length && shown === cycleStop(cycles, cycleIdx)) {
-      container.append(traceNode(cycles[cycleIdx])); cycleIdx++;
-    }
+    const c = traceAfter.get(e.id);
+    if (c) container.append(traceNode(c));
   }
 }
 
@@ -226,9 +220,11 @@ function render(s) {
       ? entries.map(([who, st]) => '<span class="chip ' + esc(st) + '"><b class="who ' + esc(who) + '">' + esc(who) + '</b> ' + esc(st) + '</span>').join('')
       : '카운슬 심의 중…';
   }
-  send.disabled = s.busy; text.disabled = s.busy;
-  if (wasBusy && !s.busy) text.focus();
-  wasBusy = s.busy;
+  // while a POST is in flight, a poll that predates it must not re-enable the composer
+  const locked = s.busy || sending;
+  send.disabled = locked; text.disabled = locked;
+  if (wasBusy && !locked) text.focus();
+  wasBusy = locked;
   errBox.style.display = s.last_error ? 'block' : 'none';
   errBox.textContent = s.last_error || '';
   const m = s.metrics || {};
@@ -249,14 +245,23 @@ setInterval(refresh, 1500); refresh();
 
 async function submit() {
   const value = text.value.trim();
-  if (!value || send.disabled) return;
-  text.value = '';
+  if (!value || send.disabled || sending) return;
+  sending = true;
   busy.classList.add('on'); busy.textContent = '카운슬 심의 중…';
   send.disabled = true; text.disabled = true;
-  const res = await fetch('/api/message', { method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ text: value, target: target.value || null }) });
-  if (!res.ok) { errBox.style.display = 'block'; errBox.textContent = await res.text(); }
+  let res;
+  try {
+    res = await fetch('/api/message', { method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: value, target: target.value || null }) });
+  } finally { sending = false; }
+  if (res && res.ok) {
+    text.value = '';   // only discard the draft once the council accepted it
+  } else {
+    errBox.style.display = 'block';
+    errBox.textContent = res ? await res.text() : '서버에 연결하지 못했다.';
+    busy.classList.remove('on'); send.disabled = false; text.disabled = false;
+  }
   refresh();
 }
 send.onclick = submit;
