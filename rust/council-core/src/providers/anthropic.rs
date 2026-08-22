@@ -60,6 +60,10 @@ impl AnthropicAdapter {
 
 #[async_trait]
 impl AgentAdapter for AnthropicAdapter {
+    fn model_label(&self) -> Option<String> {
+        Some(self.model.clone())
+    }
+
     fn id(&self) -> AgentId {
         AgentId::Claude
     }

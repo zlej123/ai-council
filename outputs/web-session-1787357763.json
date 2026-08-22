@@ -1,0 +1,106 @@
+{
+  "saved_unix": 1787357772,
+  "provider": "mock",
+  "roster": [
+    "Claude",
+    "Gemini",
+    "Grok"
+  ],
+  "events": [
+    {
+      "id": 1,
+      "author": "You",
+      "content": "전체 기능 검증용 첫 메시지"
+    },
+    {
+      "id": 2,
+      "author": "Claude",
+      "content": "한 가지 덧붙이면, 그 기준이 실제 사용자 행동을 관찰하는지도 확인해야 해요. 기능이 작동하는 것과 대화가 자연스러운 것은 다르니까요."
+    },
+    {
+      "id": 3,
+      "author": "Gemini",
+      "content": "근거 자료 쪽에서 보면, 비슷한 다중 에이전트 실험들이 이미 있으니 그 결과와 비교해볼 수 있어요."
+    },
+    {
+      "id": 4,
+      "author": "Grok",
+      "content": "반대로 생각하면, AI끼리의 합의가 오히려 편향을 강화할 수도 있다는 점은 짚고 가야 해요."
+    },
+    {
+      "id": 5,
+      "author": "You",
+      "content": "Grok, 반대 관점 하나만"
+    },
+    {
+      "id": 6,
+      "author": "Grok",
+      "content": "반대로 생각하면, AI끼리의 합의가 오히려 편향을 강화할 수도 있다는 점은 짚고 가야 해요."
+    },
+    {
+      "id": 7,
+      "author": "You",
+      "content": "예산 차단 테스트"
+    },
+    {
+      "id": 8,
+      "author": "Claude",
+      "content": "한 가지 덧붙이면, 그 기준이 실제 사용자 행동을 관찰하는지도 확인해야 해요. 기능이 작동하는 것과 대화가 자연스러운 것은 다르니까요."
+    },
+    {
+      "id": 9,
+      "author": "Gemini",
+      "content": "근거 자료 쪽에서 보면, 비슷한 다중 에이전트 실험들이 이미 있으니 그 결과와 비교해볼 수 있어요."
+    },
+    {
+      "id": 10,
+      "author": "Grok",
+      "content": "반대로 생각하면, AI끼리의 합의가 오히려 편향을 강화할 수도 있다는 점은 짚고 가야 해요."
+    }
+  ],
+  "cycles": [
+    {
+      "barriers": [
+        {
+          "line": "event #7: Claude=RequestFloor, Gemini=RequestFloor, Grok=RequestFloor · floor=Claude",
+          "reasons": [
+            "Claude: mock human-turn contribution",
+            "Gemini: mock human-turn contribution",
+            "Grok: mock human-turn contribution"
+          ]
+        },
+        {
+          "line": "event #8: Claude=SyncOnly, Gemini=RequestFloor, Grok=Pass · floor=Gemini",
+          "reasons": [
+            "Gemini: mock follow-up contribution"
+          ]
+        },
+        {
+          "line": "event #9: Claude=Pass, Gemini=SyncOnly, Grok=RequestFloor · floor=Grok",
+          "reasons": [
+            "Grok: mock follow-up contribution"
+          ]
+        },
+        {
+          "line": "event #10: Claude=Pass, Gemini=Pass, Grok=SyncOnly · floor=none",
+          "reasons": []
+        }
+      ],
+      "stop": "QUIESCENT"
+    }
+  ],
+  "metrics": {
+    "ai_streak_count": 1,
+    "ai_streak_histogram": {
+      "3": 1
+    },
+    "decisions": 9,
+    "max_ai_streak": 3,
+    "mean_ai_streak": 3.0,
+    "multi_evaluation_barriers": 4,
+    "naturalness_average": null,
+    "naturalness_ratings": [],
+    "pass_rate": 0.4444444444444444,
+    "simultaneous_request_rate": 0.25
+  }
+}

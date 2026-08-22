@@ -42,6 +42,12 @@ pub type CouncilResult<T> = Result<T, CouncilError>;
 pub trait AgentAdapter: Send + Sync {
     fn id(&self) -> AgentId;
 
+    /// The model this seat will call, when known. `None` means the
+    /// provider's own default.
+    fn model_label(&self) -> Option<String> {
+        None
+    }
+
     async fn evaluate(&self, room: &RoomSnapshot, event: &RoomEvent) -> CouncilResult<Intent>;
 
     async fn speak(&self, room: &RoomSnapshot, intent: &Intent) -> CouncilResult<String>;

@@ -7,6 +7,6 @@ pub mod providers;
 pub mod transcript;
 
 pub use adapter::{AgentAdapter, CouncilError, CouncilResult};
-pub use engine::{Council, CycleOutcome, StopReason};
+pub use engine::{Council, CycleOutcome, Progress, StopReason};
 pub use metrics::{Metrics, MetricsReport, NaturalnessRating};
 pub use model::{AgentId, AgentState, Author, Decision, Intent, Room, RoomEvent, RoomSnapshot};

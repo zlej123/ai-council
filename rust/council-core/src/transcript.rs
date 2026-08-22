@@ -44,6 +44,9 @@ pub fn render_session_markdown(
         for barrier in &cycle.barriers {
             out.push_str(&barrier_line(barrier));
             out.push('\n');
+            for (agent, reason) in &barrier.reasons {
+                out.push_str(&format!("  {agent} wanted the floor: {reason}\n"));
+            }
         }
         out.push_str(&format!(
             "cycle {}: stop={}\n",
@@ -94,6 +97,7 @@ mod tests {
                     (AgentId::Gpt, AgentDisposition::RequestFloor),
                     (AgentId::Claude, AgentDisposition::Pass),
                 ]),
+                reasons: BTreeMap::from([(AgentId::Gpt, "새 관점".to_owned())]),
                 floor_granted: Some(AgentId::Gpt),
             }],
             stop_reason: StopReason::Quiescent,
@@ -107,6 +111,7 @@ mod tests {
         assert!(markdown.contains("**#1 You**\n질문"));
         assert!(markdown.contains("**#2 GPT**\n답변"));
         assert!(markdown.contains("event #1: GPT=RequestFloor, Claude=Pass · floor=GPT"));
+        assert!(markdown.contains("GPT wanted the floor: 새 관점"));
         assert!(markdown.contains("cycle 1: stop=QUIESCENT"));
         assert!(markdown.contains("\"pass_rate\": 0.5"));
     }

@@ -20,6 +20,10 @@ impl MockAdapter {
 
 #[async_trait]
 impl AgentAdapter for MockAdapter {
+    fn model_label(&self) -> Option<String> {
+        Some("mock".to_owned())
+    }
+
     fn id(&self) -> AgentId {
         self.id
     }

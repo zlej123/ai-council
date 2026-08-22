@@ -35,7 +35,7 @@
 3. 각 AI가 event를 처리한다. 저자가 아닌 AI는 provider inference로 `PASS/REQUEST_FLOOR`를 결정한다. AI 저자는 자기 event를 sync-only 처리한다.
 4. 두 `last_heard_event`가 모두 최신 id가 되어야 listening barrier가 완료된다. 하나라도 실패하면 **fail closed**: 발언권을 주지 않고 사용자에게 오류를 반환한다.
 5. 유효한 requester가 없으면 `QUIESCENT`로 사람을 기다린다.
-6. requester가 있으면 고정 순서 `[GPT, Claude, Gemini, Grok]`(참가 로스터로 filter)의 round-robin cursor만으로 한 명을 고른다. 의미, confidence, latency, provider는 사용하지 않는다.
+6. requester가 있으면 고정 순서 `[GPT, Claude, Gemini, Grok]`(참가 로스터로 filter)의 round-robin cursor만으로 한 명을 고른다. 의미, confidence, latency, provider는 사용하지 않는다. 예외는 하나다: **사람이 특정 AI를 지목한 발언**은 "사람이 우선한다" 규칙의 확장으로, 그 사이클의 첫 발언권을 지목된 AI에게 준다(cursor는 움직이지 않으며, 이후 발언권은 다시 일반 중재를 따른다). 이것은 사람의 명시적 지시이지 시스템의 내용 판단이 아니다.
 7. 선택된 adapter가 현재 room snapshot과 자기 intent를 받아 짧은 발언을 생성한다. commit 후 1번으로 돌아간다.
 8. 사용자 발언 하나 뒤 AI 발언이 3개에 도달하면 `AI_STREAK_LIMIT`로 멈춘다. 이는 제품 정책이 아니라 무한 루프를 막는 spike 안전장치다.
 

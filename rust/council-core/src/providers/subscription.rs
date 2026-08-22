@@ -107,6 +107,10 @@ impl CodexCliAdapter {
 
 #[async_trait]
 impl AgentAdapter for CodexCliAdapter {
+    fn model_label(&self) -> Option<String> {
+        self.model.clone()
+    }
+
     fn id(&self) -> AgentId {
         AgentId::Gpt
     }
@@ -195,6 +199,10 @@ impl ClaudeCliAdapter {
 
 #[async_trait]
 impl AgentAdapter for ClaudeCliAdapter {
+    fn model_label(&self) -> Option<String> {
+        Some(self.model.clone())
+    }
+
     fn id(&self) -> AgentId {
         AgentId::Claude
     }
@@ -295,6 +303,10 @@ impl GrokCliAdapter {
 
 #[async_trait]
 impl AgentAdapter for GrokCliAdapter {
+    fn model_label(&self) -> Option<String> {
+        self.model.clone()
+    }
+
     fn id(&self) -> AgentId {
         AgentId::Grok
     }
@@ -378,6 +390,10 @@ impl AntigravityCliAdapter {
 
 #[async_trait]
 impl AgentAdapter for AntigravityCliAdapter {
+    fn model_label(&self) -> Option<String> {
+        Some(self.model.clone())
+    }
+
     fn id(&self) -> AgentId {
         AgentId::Gemini
     }

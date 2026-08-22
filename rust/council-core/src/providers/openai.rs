@@ -58,6 +58,10 @@ impl OpenAiAdapter {
 
 #[async_trait]
 impl AgentAdapter for OpenAiAdapter {
+    fn model_label(&self) -> Option<String> {
+        Some(self.model.clone())
+    }
+
     fn id(&self) -> AgentId {
         AgentId::Gpt
     }

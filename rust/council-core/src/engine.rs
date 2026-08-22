@@ -23,7 +23,27 @@ pub enum AgentDisposition {
 pub struct BarrierTrace {
     pub event_id: u64,
     pub dispositions: BTreeMap<AgentId, AgentDisposition>,
+    /// Each requester's short internal reason, when the model gave one.
+    #[serde(default)]
+    pub reasons: BTreeMap<AgentId, String>,
     pub floor_granted: Option<AgentId>,
+}
+
+/// Observation-only stream of what the council is doing mid-cycle,
+/// for UIs. Not part of the protocol.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum Progress {
+    BarrierStarted {
+        event_id: u64,
+    },
+    Decided {
+        agent: AgentId,
+        disposition: AgentDisposition,
+    },
+    Speaking {
+        agent: AgentId,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -58,6 +78,7 @@ pub struct Council {
     max_ai_streak: u64,
     metrics: Metrics,
     event_sink: Option<tokio::sync::mpsc::UnboundedSender<RoomEvent>>,
+    progress_sink: Option<tokio::sync::mpsc::UnboundedSender<Progress>>,
 }
 
 enum ProcessingResult {
@@ -92,6 +113,7 @@ impl Council {
             max_ai_streak,
             metrics: Metrics::default(),
             event_sink: None,
+            progress_sink: None,
         })
     }
 
@@ -101,12 +123,51 @@ impl Council {
         self.event_sink = Some(sink);
     }
 
+    pub fn set_progress_sink(&mut self, sink: tokio::sync::mpsc::UnboundedSender<Progress>) {
+        self.progress_sink = Some(sink);
+    }
+
+    fn progress(&self, update: Progress) {
+        if let Some(sink) = &self.progress_sink {
+            let _ = sink.send(update);
+        }
+    }
+
+    /// Seeds a fresh council with an existing conversation so a saved room
+    /// can be continued. Only valid before any event is committed. Agent
+    /// states stay empty; the next barrier re-evaluates everyone anyway.
+    pub fn seed_room(&mut self, events: Vec<RoomEvent>) -> CouncilResult<()> {
+        if !self.room.event_log.is_empty() {
+            return Err(CouncilError::new("seed_room requires an empty room"));
+        }
+        for (index, event) in events.iter().enumerate() {
+            if event.id != index as u64 + 1 {
+                return Err(CouncilError::new("seeded events must have sequential ids"));
+            }
+        }
+        for event in &events {
+            if let Some(sink) = &self.event_sink {
+                let _ = sink.send(event.clone());
+            }
+        }
+        self.room.event_log = events;
+        Ok(())
+    }
+
     pub fn room(&self) -> &Room {
         &self.room
     }
 
     pub fn roster(&self) -> &[AgentId] {
         &self.roster
+    }
+
+    /// Roster with each seat's model label, in arbitration order.
+    pub fn seats(&self) -> Vec<(AgentId, Option<String>)> {
+        self.roster
+            .iter()
+            .map(|agent| (*agent, self.adapters[agent].model_label()))
+            .collect()
     }
 
     pub fn agent_states(&self) -> &BTreeMap<AgentId, AgentState> {
@@ -129,9 +190,26 @@ impl Council {
         &mut self,
         content: impl Into<String>,
     ) -> CouncilResult<CycleOutcome> {
+        self.submit_human_directed(content, None).await
+    }
+
+    /// Human speech, optionally directing the first reply at one agent.
+    /// Direction is the human-priority rule, not content arbitration: the
+    /// full listening barrier still runs, and later grants in the same
+    /// cycle go back to normal round-robin.
+    pub async fn submit_human_directed(
+        &mut self,
+        content: impl Into<String>,
+        directed: Option<AgentId>,
+    ) -> CouncilResult<CycleOutcome> {
         let content = content.into();
         if content.trim().is_empty() {
             return Err(CouncilError::new("human event cannot be empty"));
+        }
+        if let Some(target) = directed
+            && !self.roster.contains(&target)
+        {
+            return Err(CouncilError::new(format!("{target} is not in this room")));
         }
 
         let human = self.commit_event(Author::You, content);
@@ -139,12 +217,13 @@ impl Council {
         let mut barriers = Vec::new();
         let mut current = human;
         let mut ai_streak = 0;
+        let mut directed = directed;
 
         let stop_reason = loop {
             let mut trace = self.process_event(&current).await?;
             let requesters = self.valid_requesters(current.id);
 
-            if requesters.is_empty() {
+            if requesters.is_empty() && directed.is_none() {
                 barriers.push(trace);
                 break StopReason::Quiescent;
             }
@@ -153,18 +232,22 @@ impl Council {
                 break StopReason::AiStreakLimit;
             }
 
-            let speaker = self.select_requester(&requesters);
+            // A directed grant bypasses round-robin once without moving the
+            // cursor; everything after it is ordinary arbitration.
+            let speaker = match directed.take() {
+                Some(target) => target,
+                None => self.select_requester(&requesters),
+            };
             trace.floor_granted = Some(speaker);
             barriers.push(trace);
 
-            let intent = self.states[&speaker]
-                .pending_intent
-                .clone()
-                .ok_or_else(|| CouncilError::new("selected requester has no intent"))?;
-            if intent.basis_event_id != current.id {
-                return Err(CouncilError::new("refusing to use stale intent"));
-            }
+            let intent = match self.states[&speaker].pending_intent.clone() {
+                Some(intent) if intent.basis_event_id == current.id => intent,
+                Some(_) => return Err(CouncilError::new("refusing to use stale intent")),
+                None => Intent::request_floor(current.id, "directed by the human"),
+            };
             let snapshot = self.room.snapshot();
+            self.progress(Progress::Speaking { agent: speaker });
             let speech = self.adapters[&speaker].speak(&snapshot, &intent).await?;
             if speech.trim().is_empty() {
                 return Err(CouncilError::new(format!(
@@ -208,21 +291,38 @@ impl Council {
             ));
         }
 
+        self.progress(Progress::BarrierStarted { event_id: event.id });
+        let progress_sink = self.progress_sink.clone();
         let jobs = self.roster.iter().copied().map(|agent| {
             let adapter = Arc::clone(&self.adapters[&agent]);
             let event = event.clone();
             let snapshot = snapshot.clone();
+            let progress_sink = progress_sink.clone();
             async move {
                 let result = if event.author == Author::Agent(agent) {
                     ProcessingResult::SyncOnly
                 } else {
                     ProcessingResult::Evaluated(adapter.evaluate(&snapshot, &event).await)
                 };
+                if let Some(sink) = &progress_sink {
+                    let disposition = match &result {
+                        ProcessingResult::SyncOnly => Some(AgentDisposition::SyncOnly),
+                        ProcessingResult::Evaluated(Ok(intent)) => Some(match intent.decision {
+                            Decision::Pass => AgentDisposition::Pass,
+                            Decision::RequestFloor => AgentDisposition::RequestFloor,
+                        }),
+                        ProcessingResult::Evaluated(Err(_)) => None,
+                    };
+                    if let Some(disposition) = disposition {
+                        let _ = sink.send(Progress::Decided { agent, disposition });
+                    }
+                }
                 (agent, result)
             }
         });
 
         let mut dispositions = BTreeMap::new();
+        let mut reasons = BTreeMap::new();
         let mut completed_decisions = Vec::new();
         let mut first_error = None;
 
@@ -249,6 +349,9 @@ impl Council {
                     state.last_heard_event = Some(event.id);
                     state.evaluation_count += 1;
                     completed_decisions.push(intent.decision);
+                    if let Some(reason) = &intent.reason {
+                        reasons.insert(agent, reason.clone());
+                    }
                     dispositions.insert(
                         agent,
                         match intent.decision {
@@ -283,6 +386,7 @@ impl Council {
         Ok(BarrierTrace {
             event_id: event.id,
             dispositions,
+            reasons,
             floor_granted: None,
         })
     }

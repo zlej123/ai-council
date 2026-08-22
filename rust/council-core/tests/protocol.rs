@@ -209,6 +209,72 @@ async fn four_agent_roster_grants_round_robin_in_fixed_global_order() {
 }
 
 #[tokio::test]
+async fn directed_human_speech_grants_the_target_even_if_it_passed() {
+    let gpt = Arc::new(TestAdapter::new(
+        AgentId::Gpt,
+        Decision::RequestFloor,
+        Decision::Pass,
+    ));
+    // Claude passes on human events, so only direction can make it speak.
+    let claude = Arc::new(TestAdapter::new(
+        AgentId::Claude,
+        Decision::Pass,
+        Decision::Pass,
+    ));
+    let mut council = council(gpt, claude, 3);
+
+    let outcome = council
+        .submit_human_directed("클로드, 네 생각은?", Some(AgentId::Claude))
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.barriers[0].floor_granted, Some(AgentId::Claude));
+    assert_eq!(
+        outcome.appended_events[1].author,
+        Author::Agent(AgentId::Claude)
+    );
+    // The directed grant must not advance the round-robin cursor: the next
+    // ordinary contention still starts at GPT.
+    let next = council.submit_human("다음 주제").await.unwrap();
+    assert_eq!(next.barriers[0].floor_granted, Some(AgentId::Gpt));
+}
+
+#[tokio::test]
+async fn seeded_room_continues_with_sequential_ids() {
+    let gpt = Arc::new(TestAdapter::new(
+        AgentId::Gpt,
+        Decision::RequestFloor,
+        Decision::Pass,
+    ));
+    let claude = Arc::new(TestAdapter::new(
+        AgentId::Claude,
+        Decision::Pass,
+        Decision::Pass,
+    ));
+    let mut council = council(gpt, claude, 3);
+
+    council
+        .seed_room(vec![
+            RoomEvent {
+                id: 1,
+                author: Author::You,
+                content: "이전 대화".to_owned(),
+            },
+            RoomEvent {
+                id: 2,
+                author: Author::Agent(AgentId::Gpt),
+                content: "이전 답변".to_owned(),
+            },
+        ])
+        .unwrap();
+
+    let outcome = council.submit_human("이어서 가자").await.unwrap();
+    assert_eq!(outcome.appended_events[0].id, 3);
+    assert_eq!(council.room().event_log.len(), 4);
+    assert!(council.seed_room(Vec::new()).is_err());
+}
+
+#[tokio::test]
 async fn provider_failure_fails_closed_before_any_floor_grant() {
     let gpt =
         Arc::new(TestAdapter::new(AgentId::Gpt, Decision::Pass, Decision::Pass).failing_on(1));
