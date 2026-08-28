@@ -175,23 +175,7 @@ impl ClaudeCliAdapter {
         structured: bool,
     ) -> CouncilResult<String> {
         let mut command = Command::new(&self.binary);
-        command
-            .arg("--print")
-            .arg("--safe-mode")
-            .arg("--tools")
-            .arg("")
-            .arg("--permission-mode")
-            .arg("plan")
-            .arg("--no-session-persistence")
-            .arg("--output-format")
-            .arg("json")
-            .arg("--model")
-            .arg(&self.model)
-            .arg("--system-prompt")
-            .arg(system_prompt);
-        if structured {
-            command.arg("--json-schema").arg(INTENT_SCHEMA);
-        }
+        command.args(claude_args(&self.model, &system_prompt, structured));
         remove_metered_api_environment(&mut command);
         let output = run_child(command, prompt, AgentId::Claude).await?;
         if let Ok(value) = serde_json::from_str::<Value>(&output) {
@@ -199,6 +183,35 @@ impl ClaudeCliAdapter {
         }
         parse_claude_message(&output, structured)
     }
+}
+
+/// The child `claude` invocation for one council turn.
+///
+/// No `--permission-mode`: `--tools ""` already leaves the child with no tools,
+/// so a permission mode would only govern tools that do not exist — and plan
+/// mode carried its own framing into the room. Three sessions in the quality
+/// batch have Claude opening its turn by explaining that the room is not a
+/// codebase and that "plan mode 워크플로우(Explore → Plan → 파일 작성)" does not
+/// apply, which is Claude Code's plan-mode language reaching the transcript.
+fn claude_args(model: &str, system_prompt: &str, structured: bool) -> Vec<String> {
+    let mut args = vec![
+        "--print".to_owned(),
+        "--safe-mode".to_owned(),
+        "--tools".to_owned(),
+        String::new(),
+        "--no-session-persistence".to_owned(),
+        "--output-format".to_owned(),
+        "json".to_owned(),
+        "--model".to_owned(),
+        model.to_owned(),
+        "--system-prompt".to_owned(),
+        system_prompt.to_owned(),
+    ];
+    if structured {
+        args.push("--json-schema".to_owned());
+        args.push(INTENT_SCHEMA.to_owned());
+    }
+    args
 }
 
 #[async_trait]
@@ -666,6 +679,7 @@ fn non_empty_speech(agent: AgentId, message: String) -> CouncilResult<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::claude_args;
     use super::{
         parse_antigravity_message, parse_claude_message, parse_codex_message, parse_grok_message,
     };
@@ -717,5 +731,34 @@ mod tests {
         );
         let failed = r#"{"status":"FAILED","response":"quota"}"#;
         assert!(parse_antigravity_message(failed, false).is_err());
+    }
+
+    #[test]
+    fn the_claude_child_gets_no_tools_and_no_permission_mode() {
+        let args = claude_args("sonnet", "규칙", false);
+
+        // Every tool off, so there is nothing for a permission mode to govern.
+        let tools = args
+            .iter()
+            .position(|arg| arg == "--tools")
+            .expect("--tools");
+        assert_eq!(args[tools + 1], "");
+        assert!(args.iter().any(|arg| arg == "--safe-mode"));
+        // Plan mode put its own framing in Claude's mouth; see claude_args.
+        assert!(!args.iter().any(|arg| arg == "--permission-mode"));
+    }
+
+    #[test]
+    fn only_a_judgement_call_pins_the_intent_schema() {
+        assert!(
+            !claude_args("sonnet", "규칙", false)
+                .iter()
+                .any(|arg| arg == "--json-schema")
+        );
+        assert!(
+            claude_args("sonnet", "규칙", true)
+                .iter()
+                .any(|arg| arg == "--json-schema")
+        );
     }
 }
