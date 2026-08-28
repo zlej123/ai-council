@@ -49,6 +49,9 @@
             background: var(--panel); border-left: 1px solid var(--line); padding: 16px; overflow-y: auto; z-index: 10; }
   .drawer.open { display: block; }
   .drawer h2 { font-size: 14px; margin: 4px 0 10px; }
+  .drawer-head { display: flex; align-items: center; justify-content: space-between; }
+  .drawer-head h2 { margin: 4px 0 10px; }
+  .drawer-close { background: var(--bg); border: 1px solid var(--line); padding: 3px 10px; border-radius: 8px; }
   .seat { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
   .seat .top { display: flex; align-items: center; gap: 8px; }
   .seat .dot { width: 8px; height: 8px; border-radius: 50%; background: #555; flex: none; }
@@ -131,7 +134,7 @@
 </footer>
 
 <aside id="settings" class="drawer">
-  <h2>참가자 구성</h2>
+  <div class="drawer-head"><h2>참가자 구성</h2><button class="drawer-close" data-close="settings">닫기</button></div>
   <div id="seats"></div>
   <div class="opts">AI 연속발언 상한 <input id="streak" type="number" min="1" max="10" value="3"></div>
   <button id="apply" class="wide">새 세션 시작</button>
@@ -145,7 +148,7 @@
 </aside>
 
 <aside id="histdrawer" class="drawer">
-  <h2>지난 세션</h2>
+  <div class="drawer-head"><h2>지난 세션</h2><button class="drawer-close" data-close="histdrawer">닫기</button></div>
   <div id="sessions"></div>
 </aside>
 
@@ -595,6 +598,28 @@ document.getElementById('review-btn').onclick = () => {
   if (reviewpanel.classList.contains('open')) refreshReview();
 };
 document.getElementById('review-close').onclick = () => reviewpanel.classList.remove('open');
+
+// The drawers cover the header buttons that opened them, so they need their own
+// ways out: the 닫기 button, a click outside, or Escape.
+for (const b of document.querySelectorAll('.drawer-close')) {
+  b.onclick = () => document.getElementById(b.dataset.close).classList.remove('open');
+}
+document.addEventListener('click', e => {
+  for (const [drawer, opener] of [[settings, 'gear'], [histdrawer, 'history']]) {
+    if (drawer.classList.contains('open')
+        && !drawer.contains(e.target)
+        && !document.getElementById(opener).contains(e.target)) {
+      drawer.classList.remove('open');
+    }
+  }
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  settings.classList.remove('open');
+  histdrawer.classList.remove('open');
+  reviewpanel.classList.remove('open');
+  viewer.classList.remove('open');
+});
 </script>
 </body>
 </html>
