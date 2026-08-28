@@ -1,0 +1,159 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="840" viewBox="0 0 1600 840">
+  <defs>
+    <!-- hand-drawn wobble: displaces every edge so nothing is machine-perfect -->
+    <filter id="rough" x="-6%" y="-6%" width="112%" height="112%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.013" numOctaves="3" seed="17" result="n"/>
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="5" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+    <filter id="rough2" x="-8%" y="-8%" width="116%" height="116%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.02" numOctaves="3" seed="4" result="n"/>
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="3.4" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+    <filter id="paper">
+      <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="4" stitchTiles="stitch"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+
+    <!-- ===== company marks (hand-drawn approximations) ===== -->
+    <g id="logo-openai" fill="none" stroke="#221f1b" stroke-width="6">
+      <rect x="-9.5" y="-28" width="19" height="56" rx="9.5"/>
+      <rect x="-9.5" y="-28" width="19" height="56" rx="9.5" transform="rotate(60)"/>
+      <rect x="-9.5" y="-28" width="19" height="56" rx="9.5" transform="rotate(120)"/>
+    </g>
+    <g id="ray"><path d="M 0,-30 C 2.7,-20 3.5,-13 2.2,-6 L -2.2,-6 C -3.5,-13 -2.7,-20 0,-30 Z"/></g>
+    <g id="logo-claude" fill="#c2683f">
+      <use href="#ray" transform="rotate(0)"/><use href="#ray" transform="rotate(30) scale(0.84)"/>
+      <use href="#ray" transform="rotate(60)"/><use href="#ray" transform="rotate(90) scale(0.84)"/>
+      <use href="#ray" transform="rotate(120)"/><use href="#ray" transform="rotate(150) scale(0.84)"/>
+      <use href="#ray" transform="rotate(180)"/><use href="#ray" transform="rotate(210) scale(0.84)"/>
+      <use href="#ray" transform="rotate(240)"/><use href="#ray" transform="rotate(270) scale(0.84)"/>
+      <use href="#ray" transform="rotate(300)"/><use href="#ray" transform="rotate(330) scale(0.84)"/>
+    </g>
+    <path id="logo-gemini" d="M 0,-30 C 2.2,-13.5 13.5,-2.2 30,0 C 13.5,2.2 2.2,13.5 0,30 C -2.2,13.5 -13.5,2.2 -30,0 C -13.5,-2.2 -2.2,-13.5 0,-30 Z" fill="#4a6fa5"/>
+    <g id="logo-grok" stroke="#221f1b" stroke-width="8" stroke-linecap="butt" fill="none">
+      <line x1="-21" y1="-26" x2="21" y2="26"/>
+      <line x1="21" y1="-26" x2="5.5" y2="-7"/>
+      <line x1="-5.5" y1="7" x2="-21" y2="26"/>
+    </g>
+  </defs>
+
+  <rect width="1600" height="840" fill="#f4efe4"/>
+
+  <g filter="url(#rough)">
+    <!-- floor / rug -->
+    <ellipse cx="800" cy="560" rx="565" ry="212" fill="#ece3d3"/>
+    <ellipse cx="800" cy="560" rx="565" ry="212" fill="none" stroke="#221f1b" stroke-opacity="0.16" stroke-width="2.5" stroke-dasharray="14 12"/>
+    <ellipse cx="800" cy="590" rx="315" ry="80" fill="#ddd1bc"/>
+
+    <!-- ===== far side ===== -->
+    <!-- Claude, back-left -->
+    <g>
+      <path d="M 513,470 C 513,368 537.8,354.8 577,354.8 C 616.2,354.8 641,368 641,470 Z" fill="#c2683f" stroke="#221f1b" stroke-width="3"/>
+      <circle cx="577" cy="326" r="40" fill="#fdfaf3" stroke="#221f1b" stroke-width="3"/>
+      <g transform="translate(577,326) scale(0.80)"><use href="#logo-claude"/></g>
+    </g>
+    <!-- Gemini, back-right -->
+    <g>
+      <path d="M 959,470 C 959,368 983.8,354.8 1023,354.8 C 1062.2,354.8 1087,368 1087,470 Z" fill="#5878a8" stroke="#221f1b" stroke-width="3"/>
+      <circle cx="1023" cy="326" r="40" fill="#fdfaf3" stroke="#221f1b" stroke-width="3"/>
+      <g transform="translate(1023,326) scale(0.80)"><use href="#logo-gemini"/></g>
+    </g>
+
+    <!-- ===== the round table ===== -->
+    <line x1="560" y1="566" x2="518" y2="700" stroke="#221f1b" stroke-width="8" stroke-linecap="round"/>
+    <line x1="1040" y1="566" x2="1082" y2="700" stroke="#221f1b" stroke-width="8" stroke-linecap="round"/>
+    <ellipse cx="800" cy="498" rx="330" ry="108" fill="#cbb99b" stroke="#221f1b" stroke-width="3.5"/>
+    <ellipse cx="800" cy="480" rx="330" ry="108" fill="#e6d8c0" stroke="#221f1b" stroke-width="3.5"/>
+
+    <!-- things people left on the table -->
+    <g stroke="#221f1b" stroke-width="2.6" stroke-linejoin="round">
+      <!-- notepad + pencil -->
+      <g transform="rotate(9 890 515)">
+        <rect x="844" y="484" width="92" height="62" rx="5" fill="#fdfaf3"/>
+        <line x1="856" y1="502" x2="922" y2="502" stroke-opacity="0.42" stroke-width="2.2"/>
+        <line x1="856" y1="516" x2="924" y2="516" stroke-opacity="0.42" stroke-width="2.2"/>
+        <line x1="856" y1="530" x2="898" y2="530" stroke-opacity="0.42" stroke-width="2.2"/>
+      </g>
+      <g transform="rotate(-18 690 532)">
+        <rect x="654" y="526" width="72" height="11" rx="3" fill="#d3a03c"/>
+        <path d="M 726,526 L 742,531.5 L 726,537 Z" fill="#e6d8c0"/>
+      </g>
+      <!-- two mugs -->
+      <g>
+        <path d="M 664,486 q 9,3 9,11 t -9,11" fill="none"/>
+        <path d="M 620,482 h 44 v 22 q 0,13 -22,13 t -22,-13 z" fill="#5b8a70"/>
+        <ellipse cx="642" cy="482" rx="22" ry="8" fill="#f4efe4"/>
+      </g>
+      <g>
+        <path d="M 1002,440 q 7,2 7,9 t -7,9" fill="none"/>
+        <path d="M 966,437 h 36 v 18 q 0,11 -18,11 t -18,-11 z" fill="#a8563a"/>
+        <ellipse cx="984" cy="437" rx="18" ry="6.5" fill="#f4efe4"/>
+      </g>
+    </g>
+
+    <!-- the floor token: whoever it points at is holding the floor -->
+    <g transform="translate(800,462) rotate(213)">
+      <path d="M 22,-15 L 62,0 L 22,15 Z" fill="#c2683f" stroke="#221f1b" stroke-width="2.8" stroke-linejoin="round"/>
+    </g>
+    <circle cx="800" cy="462" r="29" fill="#f0dcc8" stroke="#221f1b" stroke-width="3.2"/>
+    <circle cx="800" cy="462" r="14" fill="#c2683f" stroke="#221f1b" stroke-width="2.4"/>
+
+    <!-- ===== near side ===== -->
+    <g>
+      <path d="M 371.8,840 C 371.8,583.1 397.8,569.2 439,569.2 C 480.2,569.2 506.2,583.1 506.2,840 Z" fill="#5b8a70" stroke="#221f1b" stroke-width="3"/>
+      <circle cx="439" cy="539" r="42" fill="#fdfaf3" stroke="#221f1b" stroke-width="3"/>
+      <g transform="translate(439,539) scale(0.84)"><use href="#logo-openai"/></g>
+    </g>
+    <g>
+      <path d="M 1093.8,840 C 1093.8,583.1 1119.8,569.2 1161,569.2 C 1202.2,569.2 1228.2,583.1 1228.2,840 Z" fill="#7c6690" stroke="#221f1b" stroke-width="3"/>
+      <circle cx="1161" cy="539" r="42" fill="#fdfaf3" stroke="#221f1b" stroke-width="3"/>
+      <g transform="translate(1161,539) scale(0.84)"><use href="#logo-grok"/></g>
+    </g>
+    <g>
+      <path d="M 729.6,840 C 729.6,676.2 756.9,661.7 800,661.7 C 843.1,661.7 870.4,676.2 870.4,840 Z" fill="#d3a03c" stroke="#221f1b" stroke-width="3"/>
+      <circle cx="800" cy="630" r="44" fill="#dcbe96" stroke="#221f1b" stroke-width="3"/>
+    </g>
+  </g>
+
+  <!-- ===== the conversation ===== -->
+  <g filter="url(#rough2)" stroke="#221f1b" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Claude is speaking now -->
+    <g>
+      <path d="M 322,118 H 508 A 22 22 0 0 1 530,140 V 200 A 22 22 0 0 1 508,222 H 470 L 556,290 L 424,222 H 322 A 22 22 0 0 1 300,200 V 140 A 22 22 0 0 1 322,118 Z"
+            fill="#f7e2d4" stroke-width="3.4"/>
+      <g stroke-opacity="0.55" stroke-width="5">
+        <line x1="328" y1="150" x2="486" y2="150"/>
+        <line x1="328" y1="173" x2="502" y2="173"/>
+        <line x1="328" y1="196" x2="428" y2="196"/>
+      </g>
+    </g>
+    <!-- and the others have been talking too -->
+    <g opacity="0.5">
+      <path d="M 1104,148 H 1268 A 20 20 0 0 1 1288,168 V 214 A 20 20 0 0 1 1268,234 H 1142 L 1052,286 L 1112,234 H 1104 A 20 20 0 0 1 1084,214 V 168 A 20 20 0 0 1 1104,148 Z"
+            fill="#fdfaf3" stroke-width="3"/>
+      <g stroke-opacity="0.5" stroke-width="4.6">
+        <line x1="1110" y1="178" x2="1252" y2="178"/>
+        <line x1="1110" y1="202" x2="1206" y2="202"/>
+      </g>
+    </g>
+    <g opacity="0.45">
+      <path d="M 196,412 H 344 A 18 18 0 0 1 362,430 V 470 A 18 18 0 0 1 344,488 H 330 L 404,522 L 292,488 H 196 A 18 18 0 0 1 178,470 V 430 A 18 18 0 0 1 196,412 Z"
+            fill="#fdfaf3" stroke-width="3"/>
+      <g stroke-opacity="0.5" stroke-width="4.4">
+        <line x1="202" y1="440" x2="330" y2="440"/>
+        <line x1="202" y1="462" x2="286" y2="462"/>
+      </g>
+    </g>
+    <g opacity="0.45">
+      <path d="M 566,640 H 700 A 18 18 0 0 1 718,658 V 666 L 758,632 L 718,692 V 696 A 18 18 0 0 1 700,714 H 566 A 18 18 0 0 1 548,696 V 658 A 18 18 0 0 1 566,640 Z"
+            fill="#fdfaf3" stroke-width="3"/>
+      <g stroke-opacity="0.5" stroke-width="4.2">
+        <line x1="572" y1="664" x2="692" y2="664"/>
+        <line x1="572" y1="686" x2="640" y2="686"/>
+      </g>
+    </g>
+  </g>
+
+  <!-- paper grain -->
+  <rect width="1600" height="840" filter="url(#paper)" opacity="0.16" style="mix-blend-mode:multiply"/>
+</svg>
