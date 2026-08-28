@@ -73,6 +73,31 @@
   #viewer.open { display: block; }
   #viewer .bar { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
   #viewer .bar .name { color: var(--dim); font-size: 12.5px; flex: 1; }
+  #reviewpanel { display: none; position: fixed; inset: 24px; background: var(--bg); border: 1px solid var(--line);
+            border-radius: 12px; z-index: 20; padding: 16px; overflow-y: auto; }
+  #reviewpanel.open { display: block; }
+  #reviewpanel .bar { display: flex; gap: 8px; margin-bottom: 14px; align-items: center; }
+  #reviewpanel .bar .name { font-size: 14px; font-weight: 700; flex: 1; }
+  .rv-stats { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+  .rv-stat { flex: 1; min-width: 160px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .rv-stat .big { font-size: 22px; font-weight: 700; margin: 2px 0; }
+  .rv-stat .hint { font-size: 11.5px; color: var(--dim); }
+  .rv-hist { display: flex; align-items: flex-end; gap: 4px; height: 46px; margin-top: 8px; }
+  .rv-hist .bar-col { display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
+      flex: 1; font-size: 10px; color: var(--dim); gap: 3px; }
+  .rv-hist .bar-col .fill { width: 100%; background: #2b4c7e; border-radius: 3px 3px 0 0; }
+  .rv-caption { color: var(--dim); font-size: 12px; margin: 8px 0 14px; }
+  #review-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  #review-table th, #review-table td { border-top: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+  #review-table th { color: var(--dim); font-weight: 400; font-size: 11.5px; }
+  #review-table td.topic-cell { max-width: 240px; }
+  #review-table .topic { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+  #review-table .topic:hover { text-decoration: underline; }
+  #review-table tr.excluded { opacity: .45; }
+  #review-table .rate-btns { display: flex; gap: 3px; margin-top: 4px; }
+  #review-table .rate-btns button { background: var(--panel); border: 1px solid var(--line); color: var(--text);
+       padding: 2px 7px; border-radius: 6px; font-size: 11.5px; }
+  #review-table .rate-btns button.sel { background: #2b4c7e; border-color: #2b4c7e; }
 </style>
 </head>
 <body>
@@ -82,6 +107,7 @@
   <span class="meta" id="file"></span>
   <div class="buttons">
     <button id="history">기록</button>
+    <button id="review-btn">리뷰</button>
     <button id="gear">설정</button>
   </div>
 </header>
@@ -131,11 +157,49 @@
   <div id="viewer-log" style="display:flex;flex-direction:column;gap:10px"></div>
 </div>
 
+<div id="reviewpanel">
+  <div class="bar">
+    <span class="name">리뷰 보드</span>
+    <button id="review-close" style="background:var(--panel);border:1px solid var(--line)">닫기</button>
+  </div>
+  <div class="rv-stats">
+    <div class="rv-stat">
+      <div class="hint">자연스러움 평균</div>
+      <div class="big" id="rv-natural">–</div>
+      <div class="hint" id="rv-natural-sub"></div>
+    </div>
+    <div class="rv-stat">
+      <div class="hint">PASS율</div>
+      <div class="big" id="rv-pass">–</div>
+      <div class="hint" id="rv-pass-sub"></div>
+    </div>
+    <div class="rv-stat">
+      <div class="hint">동시 REQUEST율</div>
+      <div class="big" id="rv-simul">–</div>
+      <div class="hint" id="rv-simul-sub"></div>
+    </div>
+    <div class="rv-stat">
+      <div class="hint">AI 연속발언 (평균/최대)</div>
+      <div class="big" id="rv-streak">–</div>
+      <div class="rv-hist" id="rv-hist"></div>
+    </div>
+  </div>
+  <div class="rv-caption" id="rv-caption"></div>
+  <table id="review-table">
+    <thead><tr>
+      <th>주제</th><th>로스터</th><th>이벤트</th><th>PASS율</th><th>동시REQ율</th>
+      <th>streak 평균/최대</th><th>평점</th><th>포함</th>
+    </tr></thead>
+    <tbody id="review-tbody"></tbody>
+  </table>
+</div>
+
 <script>
 const log = document.getElementById('log'), text = document.getElementById('text'),
       send = document.getElementById('send'), busy = document.getElementById('busy'),
       errBox = document.getElementById('error'), settings = document.getElementById('settings'),
       histdrawer = document.getElementById('histdrawer'), viewer = document.getElementById('viewer'),
+      reviewpanel = document.getElementById('reviewpanel'),
       stopBtn = document.getElementById('stop'), target = document.getElementById('target');
 let lastCount = -1, lastCycles = -1, wasBusy = false, viewerFile = null, MODELS = {}, sending = false;
 
@@ -318,6 +382,7 @@ async function refreshProviders() {
 
 document.getElementById('gear').onclick = () => {
   histdrawer.classList.remove('open');
+  reviewpanel.classList.remove('open');
   settings.classList.toggle('open');
   if (settings.classList.contains('open')) refreshProviders();
 };
@@ -377,6 +442,7 @@ async function openViewer(file) {
 
 document.getElementById('history').onclick = () => {
   settings.classList.remove('open');
+  reviewpanel.classList.remove('open');
   histdrawer.classList.toggle('open');
   if (histdrawer.classList.contains('open')) refreshSessions();
 };
@@ -390,6 +456,138 @@ document.getElementById('resume').onclick = async () => {
   viewer.classList.remove('open'); histdrawer.classList.remove('open');
   lastCount = -1; refresh();
 };
+
+// ----- review board -----
+function fmtStreak(mean, max) {
+  return (mean == null ? '–' : mean.toFixed(2)) + ' / ' + (max == null ? '–' : max);
+}
+
+function renderHistogram(box, hist) {
+  box.innerHTML = '';
+  const keys = Object.keys(hist || {}).map(Number).sort((a, b) => a - b);
+  if (!keys.length) { box.innerHTML = '<span class="hint">–</span>'; return; }
+  const max = Math.max(...keys.map(k => hist[k]));
+  for (const k of keys) {
+    const col = document.createElement('div'); col.className = 'bar-col';
+    const fill = document.createElement('div'); fill.className = 'fill';
+    fill.style.height = Math.max(2, Math.round(hist[k] / max * 32)) + 'px';
+    const label = document.createElement('div'); label.textContent = k + '(' + hist[k] + ')';
+    col.append(fill, label);
+    box.append(col);
+  }
+}
+
+function reviewRow(s) {
+  const tr = document.createElement('tr');
+  // Dimmed whenever the row does not feed the totals — a reviewer held it out,
+  // or it is a mock run, which is a scripted conversation and says nothing
+  // about quality.
+  if (!s.counted) tr.className = 'excluded';
+  const isMock = s.provider === 'mock';
+  const m = s.metrics || {};
+
+  const tdTopic = document.createElement('td'); tdTopic.className = 'topic-cell';
+  const topicDiv = document.createElement('div'); topicDiv.className = 'topic';
+  topicDiv.textContent = s.topic || '(비어 있음)';
+  topicDiv.title = s.topic || '';
+  topicDiv.onclick = () => { reviewpanel.classList.remove('open'); openViewer(s.file); };
+  tdTopic.append(topicDiv);
+  if (isMock) {
+    const badge = document.createElement('span'); badge.className = 'hint';
+    badge.textContent = 'mock — 집계 제외';
+    tdTopic.append(badge);
+  }
+
+  const tdRoster = document.createElement('td'); tdRoster.textContent = (s.roster || []).join(' · ');
+  const tdEvents = document.createElement('td'); tdEvents.textContent = s.events;
+  const tdPass = document.createElement('td'); tdPass.textContent = pct(m.pass_rate);
+  const tdSimul = document.createElement('td'); tdSimul.textContent = pct(m.simultaneous_request_rate);
+  const tdStreak = document.createElement('td'); tdStreak.textContent = fmtStreak(m.mean_ai_streak, m.max_ai_streak);
+
+  const tdRate = document.createElement('td');
+  const ratings = m.naturalness_ratings || [];
+  if (ratings.length) {
+    const summary = document.createElement('div'); summary.className = 'hint';
+    summary.textContent = (m.naturalness_average != null ? m.naturalness_average.toFixed(1) : '–') + ' (' + ratings.length + ')';
+    tdRate.append(summary);
+  }
+  const btns = document.createElement('div'); btns.className = 'rate-btns';
+  for (let i = 1; i <= 5; i++) {
+    const b = document.createElement('button'); b.textContent = i;
+    b.disabled = isMock;
+    b.onclick = async () => {
+      try {
+        const res = await fetch('/api/review/rate', { method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ file: s.file, score: i }) });
+        if (!res.ok) { alert(await res.text()); return; }
+      } catch (_) { return; }
+      refreshReview();
+    };
+    btns.append(b);
+  }
+  tdRate.append(btns);
+
+  const tdInclude = document.createElement('td');
+  const chk = document.createElement('input'); chk.type = 'checkbox';
+  chk.checked = !(s.review && s.review.excluded);
+  chk.disabled = isMock;
+  chk.title = isMock ? 'mock 세션은 품질 집계에 들어가지 않는다' : '';
+  chk.onchange = async () => {
+    const excluded = !chk.checked;
+    const reason = excluded ? (prompt('제외 사유 (선택, 그대로 두면 사유 없이 제외)') || null) : null;
+    try {
+      const res = await fetch('/api/review/exclude', { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ file: s.file, excluded, reason }) });
+      if (!res.ok) { alert(await res.text()); }
+    } catch (_) {}
+    refreshReview();
+  };
+  tdInclude.append(chk);
+
+  tr.append(tdTopic, tdRoster, tdEvents, tdPass, tdSimul, tdStreak, tdRate, tdInclude);
+  return tr;
+}
+
+function renderReview(data) {
+  const a = data.aggregate || {};
+  document.getElementById('rv-natural').textContent = a.naturalness_average == null ? '–' : a.naturalness_average.toFixed(2);
+  document.getElementById('rv-natural-sub').textContent = (a.rated_sessions || 0) + '/' + (a.included_sessions || 0) + '개 세션 평가됨';
+  document.getElementById('rv-pass').textContent = pct(a.pass_rate);
+  document.getElementById('rv-pass-sub').textContent = (a.decisions || 0) + '건';
+  document.getElementById('rv-simul').textContent = pct(a.simultaneous_request_rate);
+  document.getElementById('rv-simul-sub').textContent = (a.multi_evaluation_barriers || 0) + '개 barrier';
+  document.getElementById('rv-streak').textContent = fmtStreak(a.mean_ai_streak, a.max_ai_streak);
+  renderHistogram(document.getElementById('rv-hist'), a.ai_streak_histogram);
+  document.getElementById('rv-caption').textContent =
+    (a.total_sessions || 0) + '개 중 ' + (a.included_sessions || 0) + '개 포함';
+
+  const tbody = document.getElementById('review-tbody');
+  tbody.innerHTML = '';
+  const sessions = data.sessions || [];
+  if (!sessions.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="hint">저장된 세션이 없다.</td></tr>';
+    return;
+  }
+  for (const s of sessions) tbody.append(reviewRow(s));
+}
+
+async function refreshReview() {
+  const tbody = document.getElementById('review-tbody');
+  tbody.innerHTML = '<tr><td colspan="8" class="hint">불러오는 중…</td></tr>';
+  try {
+    renderReview(await (await fetch('/api/review')).json());
+  } catch (_) {
+    tbody.innerHTML = '<tr><td colspan="8" class="hint">불러오지 못했다.</td></tr>';
+  }
+}
+
+document.getElementById('review-btn').onclick = () => {
+  settings.classList.remove('open');
+  histdrawer.classList.remove('open');
+  reviewpanel.classList.toggle('open');
+  if (reviewpanel.classList.contains('open')) refreshReview();
+};
+document.getElementById('review-close').onclick = () => reviewpanel.classList.remove('open');
 </script>
 </body>
 </html>

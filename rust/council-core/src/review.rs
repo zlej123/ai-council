@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::metrics::{MetricsReport, NaturalnessRating};
+use crate::providers::ProviderKind;
 use crate::session::{ReviewAnnotation, SessionRecord};
 
 /// One saved session, reduced to what the review table shows.
@@ -25,6 +26,10 @@ pub struct SessionSummary {
     pub events: usize,
     pub metrics: MetricsReport,
     pub review: ReviewAnnotation,
+    /// Whether this session feeds the quality totals. A mock run is a
+    /// deterministic script, so it says nothing about conversation quality;
+    /// an excluded session was held out by a reviewer.
+    pub counted: bool,
 }
 
 /// The four §6 numbers over every session still included in the review.
@@ -64,6 +69,7 @@ pub fn summarize(file: &str, record: &SessionRecord) -> Option<SessionSummary> {
         events: record.events.len(),
         metrics,
         review: record.review.clone(),
+        counted: !record.review.excluded && record.provider != ProviderKind::Mock.label(),
     })
 }
 
@@ -79,7 +85,7 @@ fn count_behind(rate: Option<f64>, denominator: u64) -> u64 {
 /// averaging the per-session rates would weight a two-decision session as
 /// heavily as a forty-decision one.
 pub fn aggregate(summaries: &[SessionSummary]) -> ReviewAggregate {
-    let included = summaries.iter().filter(|summary| !summary.review.excluded);
+    let included = summaries.iter().filter(|summary| summary.counted);
 
     let mut decisions = 0;
     let mut passes = 0;
@@ -217,6 +223,7 @@ mod tests {
                 excluded,
                 reason: None,
             },
+            counted: !excluded,
         }
     }
 
@@ -370,5 +377,57 @@ mod tests {
 
         assert!(metrics.naturalness_ratings.is_empty());
         assert_eq!(metrics.naturalness_average, None);
+    }
+    #[test]
+    fn mock_sessions_never_count_toward_the_quality_totals() {
+        let mut mock = summary(
+            "mock.json",
+            report(40, 0.9, 10, 0.9, &[(1, 5)], &[5]),
+            false,
+        );
+        mock.provider = "mock".to_owned();
+        mock.counted = false;
+        let real = summary("real.json", report(10, 0.2, 2, 0.5, &[(2, 1)], &[3]), false);
+
+        let total = aggregate(&[mock, real]);
+
+        assert_eq!(total.total_sessions, 2);
+        assert_eq!(total.included_sessions, 1);
+        assert_eq!(total.decisions, 10);
+        assert_eq!(total.naturalness_average, Some(3.0));
+    }
+
+    #[test]
+    fn summarize_marks_a_mock_run_as_not_counted() {
+        let record: SessionRecord = serde_json::from_value(serde_json::json!({
+            "saved_unix": 1,
+            "provider": "mock",
+            "roster": ["GPT", "Claude"],
+            "events": [{ "id": 1, "author": "You", "content": "주제" }],
+            "cycles": [],
+            "metrics": report(2, 0.5, 1, 1.0, &[(1, 1)], &[])
+        }))
+        .expect("record");
+
+        let summary = summarize("mock.json", &record).expect("summary");
+
+        assert!(!summary.counted);
+    }
+
+    #[test]
+    fn summarize_counts_a_real_subscription_session() {
+        let record: SessionRecord = serde_json::from_value(serde_json::json!({
+            "saved_unix": 1,
+            "provider": "subscription CLIs",
+            "roster": ["GPT", "Claude"],
+            "events": [{ "id": 1, "author": "You", "content": "주제" }],
+            "cycles": [],
+            "metrics": report(2, 0.5, 1, 1.0, &[(1, 1)], &[])
+        }))
+        .expect("record");
+
+        let summary = summarize("real.json", &record).expect("summary");
+
+        assert!(summary.counted);
     }
 }
