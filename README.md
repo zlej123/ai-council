@@ -161,15 +161,16 @@ In the settings panel (top right):
 - **Session budget** — set a cost ($) or token ceiling and new utterances are refused once it is reached (0 = unlimited).
 - **This session's usage** — calls, input/output tokens, and CLI-reported cost, accumulated per AI. Remaining subscription quota is not shown because the CLIs do not expose it headlessly — hitting a limit surfaces as a fail-closed error, and the error text carries the reset time.
 
-## Verification status (2026-08-21)
+## Verification status (2026-08-28)
 
 | Item | Status |
 | --- | --- |
-| fmt / clippy (-D warnings) / 15 tests | Passing |
+| fmt / clippy (-D warnings) / 34 tests | Passing |
 | Full mock loop + transcript export | Passing |
 | Subscription auth pre-check (`--check-providers`) | Passing |
 | GPT subscription adapter, real judgement | Passed in a 2026-08-21 Codex session |
 | Claude subscription adapter evaluate/speak | Passed on 2026-08-21 with real CLI calls (`structured_output` judgement + natural-language speech) |
 | Barrier fail-closed (real provider error) | Passing — confirmed no floor granted when GPT hit its quota |
-| Real three-way GPT + Claude session | **Pending** — blocked on ChatGPT subscription usage limit, run after the 2026-08-27 17:08 reset |
-| Conversation-quality acceptance (10 topics + `/rate`) | **Pending** — starts once the session above resumes |
+| Four-seat GPT + Claude + Gemini + Grok sessions | Passing — 10 topics run on 2026-08-28 |
+| Review board over the saved sessions | Passing — 14 sessions, 163 judgements aggregated |
+| Conversation-quality acceptance (10 topics + `/rate`) | **Pending** — transcripts are ready; the naturalness scores are a human's to give and are not filled in |
