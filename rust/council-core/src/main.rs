@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use council_core::providers::{ProviderKind, build_adapters};
+use council_core::session::SessionRecord;
 use council_core::transcript::{barrier_line, render_session_markdown};
 use council_core::{AgentId, Council, CycleOutcome};
 use tokio::io::{self, AsyncBufReadExt, BufReader};
@@ -166,6 +167,7 @@ fn save_transcript(
         Ok(()) => {}
         Err(error) => eprintln!("Failed to save transcript to {}: {error}", path.display()),
     }
+    save_sidecar(options, council, cycles, path);
 }
 
 fn parse_options() -> Result<Options, Box<dyn Error>> {
@@ -273,5 +275,38 @@ fn handle_rating(council: &mut Council, arguments: &str) {
     match council.rate_naturalness(score, note) {
         Ok(()) => println!("Naturalness rating recorded in memory."),
         Err(error) => eprintln!("{error}"),
+    }
+}
+
+/// Writes the machine-readable copy beside the Markdown so a CLI session shows
+/// up on the review board with the web sessions. Best effort: a session that
+/// cannot be summarised is still saved as readable Markdown.
+fn save_sidecar(
+    options: &Options,
+    council: &Council,
+    cycles: &[CycleOutcome],
+    markdown_path: &std::path::Path,
+) {
+    let saved_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .unwrap_or(0);
+    let record = SessionRecord::from_session(
+        saved_unix,
+        options.provider_label(),
+        &council
+            .roster()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        &council.room().snapshot(),
+        cycles,
+        &council.metrics_report(),
+    );
+    let Ok(json) = serde_json::to_string_pretty(&record) else {
+        return;
+    };
+    if let Err(error) = std::fs::write(markdown_path.with_extension("json"), json) {
+        eprintln!("Failed to save session sidecar: {error}");
     }
 }

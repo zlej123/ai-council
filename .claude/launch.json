@@ -1,0 +1,26 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "council-web-mock",
+      "runtimeExecutable": "cargo",
+      "runtimeArgs": [
+        "run",
+        "--manifest-path",
+        "rust/Cargo.toml",
+        "-p",
+        "council-core",
+        "--bin",
+        "council-web",
+        "--",
+        "--provider",
+        "mock",
+        "--agents",
+        "gpt,claude,gemini,grok",
+        "--port",
+        "8788"
+      ],
+      "port": 8788
+    }
+  ]
+}

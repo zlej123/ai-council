@@ -10,39 +10,18 @@ use axum::response::Html;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use council_core::engine::AgentDisposition;
+use council_core::metrics::MetricsReport;
 use council_core::providers::{
     AgentSpec, ProviderKind, UsageSample, build_adapters_with, check_subscription,
 };
-use council_core::transcript::{barrier_line, render_session_markdown};
+use council_core::review::{self, ReviewAggregate, SessionSummary};
+use council_core::session::{ReviewAnnotation, SessionRecord, UiCycle, UiEvent};
+use council_core::transcript::render_session_markdown;
 use council_core::{AgentId, Author, Council, CycleOutcome, Progress, RoomEvent};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, RwLock, mpsc};
 
 const INDEX_HTML: &str = include_str!("../../web/index.html");
-
-#[derive(Clone, Serialize, Deserialize)]
-struct UiEvent {
-    id: u64,
-    author: String,
-    content: String,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct UiBarrier {
-    line: String,
-    #[serde(default)]
-    reasons: Vec<String>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct UiCycle {
-    barriers: Vec<UiBarrier>,
-    stop: String,
-    /// Id of the last event this cycle appended; the page inserts the
-    /// control trace right after that event.
-    #[serde(default)]
-    last_event_id: u64,
-}
 
 #[derive(Clone, Default, Serialize)]
 struct UsageTotals {
@@ -73,18 +52,6 @@ struct UiState {
     progress: BTreeMap<String, String>,
     budget: Budget,
     models: BTreeMap<String, String>,
-}
-
-/// Sidecar JSON written next to each Markdown transcript so a room can be
-/// listed, viewed, and resumed later.
-#[derive(Serialize, Deserialize)]
-struct SessionRecord {
-    saved_unix: u64,
-    provider: String,
-    roster: Vec<String>,
-    events: Vec<UiEvent>,
-    cycles: Vec<UiCycle>,
-    metrics: serde_json::Value,
 }
 
 enum Command {
@@ -212,29 +179,6 @@ fn disposition_label(disposition: AgentDisposition) -> &'static str {
         AgentDisposition::Pass => "PASS",
         AgentDisposition::RequestFloor => "REQUEST",
         AgentDisposition::SyncOnly => "동기화",
-    }
-}
-
-fn ui_cycle(outcome: &CycleOutcome) -> UiCycle {
-    UiCycle {
-        barriers: outcome
-            .barriers
-            .iter()
-            .map(|barrier| UiBarrier {
-                line: barrier_line(barrier),
-                reasons: barrier
-                    .reasons
-                    .iter()
-                    .map(|(agent, reason)| format!("{agent}: {reason}"))
-                    .collect(),
-            })
-            .collect(),
-        stop: outcome.stop_reason.to_string(),
-        last_event_id: outcome
-            .appended_events
-            .last()
-            .map(|event| event.id)
-            .unwrap_or(0),
     }
 }
 
@@ -378,7 +322,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     let mut ui = council_app.ui.write().await;
                     match result {
                         Ok(outcome) => {
-                            ui.cycles.push(ui_cycle(&outcome));
+                            ui.cycles.push(UiCycle::from_outcome(&outcome));
                             ui.last_error = None;
                             cycles.push(outcome);
                         }
@@ -484,6 +428,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .route("/api/budget", post(post_budget))
         .route("/api/sessions", get(get_sessions))
         .route("/api/session_view", get(get_session_view))
+        .route("/api/review", get(get_review))
+        .route("/api/review/rate", post(post_review_rate))
+        .route("/api/review/exclude", post(post_review_exclude))
         .route("/api/resume", post(post_resume))
         .with_state(app);
 
@@ -506,22 +453,18 @@ async fn save_session(
     let snapshot = council.room().snapshot();
     let metrics = council.metrics_report();
     let markdown = render_session_markdown(provider_label, &snapshot, cycles, &metrics);
-    let record = SessionRecord {
-        saved_unix: now_unix(),
-        provider: provider_label.to_owned(),
-        roster: council.roster().iter().map(ToString::to_string).collect(),
-        events: snapshot
-            .events
+    let record = SessionRecord::from_session(
+        now_unix(),
+        provider_label,
+        &council
+            .roster()
             .iter()
-            .map(|event| UiEvent {
-                id: event.id,
-                author: event.author.to_string(),
-                content: event.content.clone(),
-            })
-            .collect(),
-        cycles: cycles.iter().map(ui_cycle).collect(),
-        metrics: serde_json::to_value(&metrics).unwrap_or(serde_json::Value::Null),
-    };
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        &snapshot,
+        cycles,
+        &metrics,
+    );
     let dir = &app.outputs_dir;
     let _ = std::fs::write(dir.join(format!("{session_base}.md")), markdown);
     if let Ok(json) = serde_json::to_string_pretty(&record) {
@@ -783,6 +726,153 @@ async fn get_session_view(
     let value: serde_json::Value = serde_json::from_str(&raw)
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
     Ok(Json(value))
+}
+
+#[derive(Serialize)]
+struct ReviewBoard {
+    sessions: Vec<SessionSummary>,
+    aggregate: ReviewAggregate,
+}
+
+#[derive(Deserialize)]
+struct ReviewRateBody {
+    file: String,
+    score: u8,
+    note: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ReviewExcludeBody {
+    file: String,
+    excluded: bool,
+    reason: Option<String>,
+}
+
+/// Gives every Markdown transcript without a sidecar one, so CLI sessions and
+/// anything saved before the sidecar existed show up on the board and can be
+/// rated. Best effort — a file that is not a transcript is simply skipped.
+fn import_markdown_transcripts(outputs_dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(outputs_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+        let sidecar = path.with_extension("json");
+        if sidecar.exists() {
+            continue;
+        }
+        let Ok(markdown) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let saved_unix = entry
+            .metadata()
+            .and_then(|data| data.modified())
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|since| since.as_secs())
+            .unwrap_or(0);
+        let Some(record) = SessionRecord::from_markdown(&markdown, saved_unix) else {
+            continue;
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&record) {
+            let _ = std::fs::write(sidecar, json);
+        }
+    }
+}
+
+async fn get_review(State(app): State<Arc<App>>) -> Json<ReviewBoard> {
+    import_markdown_transcripts(&app.outputs_dir);
+    let mut sessions = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&app.outputs_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.ends_with(".json") {
+                continue;
+            }
+            let Ok(raw) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_str::<SessionRecord>(&raw) else {
+                continue;
+            };
+            if let Some(summary) = review::summarize(&name, &record) {
+                sessions.push(summary);
+            }
+        }
+    }
+    sessions.sort_by_key(|summary| std::cmp::Reverse(summary.saved_unix));
+    let aggregate = review::aggregate(&sessions);
+    Json(ReviewBoard {
+        sessions,
+        aggregate,
+    })
+}
+
+/// Edits one sidecar in place. The file is reloaded as raw JSON and only the
+/// touched key is replaced, so a key this binary does not know about survives
+/// the write instead of being dropped by a typed round trip.
+fn edit_sidecar<F>(
+    outputs_dir: &std::path::Path,
+    file: &str,
+    edit: F,
+) -> Result<(), (StatusCode, String)>
+where
+    F: FnOnce(&mut serde_json::Value) -> Result<(), String>,
+{
+    let name =
+        safe_session_file(file).ok_or((StatusCode::BAD_REQUEST, "invalid file name".to_owned()))?;
+    let path = outputs_dir.join(&name);
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?;
+    let mut value: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    edit(&mut value).map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    let text = serde_json::to_string_pretty(&value)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    std::fs::write(&path, text)
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(())
+}
+
+async fn post_review_rate(
+    State(app): State<Arc<App>>,
+    Json(body): Json<ReviewRateBody>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    edit_sidecar(&app.outputs_dir, &body.file, |value| {
+        let slot = value
+            .get_mut("metrics")
+            .ok_or_else(|| "sidecar has no metrics".to_owned())?;
+        let mut report: MetricsReport =
+            serde_json::from_value(slot.clone()).map_err(|error| error.to_string())?;
+        review::push_rating(&mut report, body.score, body.note.clone()).map_err(str::to_owned)?;
+        *slot = serde_json::to_value(&report).map_err(|error| error.to_string())?;
+        Ok(())
+    })?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+async fn post_review_exclude(
+    State(app): State<Arc<App>>,
+    Json(body): Json<ReviewExcludeBody>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    edit_sidecar(&app.outputs_dir, &body.file, |value| {
+        let annotation = ReviewAnnotation {
+            excluded: body.excluded,
+            reason: body.reason.clone().filter(|text| !text.trim().is_empty()),
+        };
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| "sidecar is not a JSON object".to_owned())?;
+        object.insert(
+            "review".to_owned(),
+            serde_json::to_value(&annotation).map_err(|error| error.to_string())?,
+        );
+        Ok(())
+    })?;
+    Ok(StatusCode::ACCEPTED)
 }
 
 async fn post_resume(
