@@ -94,6 +94,7 @@
   #review-table .topic { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
   #review-table .topic:hover { text-decoration: underline; }
   #review-table tr.excluded { opacity: .45; }
+  .rate-note { width: 100%; margin-top: 4px; font-size: 11.5px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; box-sizing: border-box; }
   #review-table .rate-btns { display: flex; gap: 3px; margin-top: 4px; }
   #review-table .rate-btns button { background: var(--panel); border: 1px solid var(--line); color: var(--text);
        padding: 2px 7px; border-radius: 6px; font-size: 11.5px; }
@@ -509,23 +510,29 @@ function reviewRow(s) {
   if (ratings.length) {
     const summary = document.createElement('div'); summary.className = 'hint';
     summary.textContent = (m.naturalness_average != null ? m.naturalness_average.toFixed(1) : '–') + ' (' + ratings.length + ')';
+    // Past notes matter more than the number; surface them on hover.
+    summary.title = ratings.filter(r => r.note).map(r => r.score + '점: ' + r.note).join('\n');
     tdRate.append(summary);
   }
   const btns = document.createElement('div'); btns.className = 'rate-btns';
+  const note = document.createElement('input');
+  note.type = 'text'; note.className = 'rate-note';
+  note.placeholder = '메모 (선택) — 점수를 누르면 함께 저장';
+  note.disabled = isMock;
   for (let i = 1; i <= 5; i++) {
     const b = document.createElement('button'); b.textContent = i;
     b.disabled = isMock;
     b.onclick = async () => {
       try {
         const res = await fetch('/api/review/rate', { method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ file: s.file, score: i }) });
+          body: JSON.stringify({ file: s.file, score: i, note: note.value.trim() || null }) });
         if (!res.ok) { alert(await res.text()); return; }
       } catch (_) { return; }
       refreshReview();
     };
     btns.append(b);
   }
-  tdRate.append(btns);
+  tdRate.append(btns, note);
 
   const tdInclude = document.createElement('td');
   const chk = document.createElement('input'); chk.type = 'checkbox';
