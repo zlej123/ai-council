@@ -1,0 +1,63 @@
+# Council session transcript
+
+- provider: subscription CLIs
+- events: 4
+- cycles: 1
+
+## Events
+
+**#1 You**
+회사에서 동료끼리 연봉을 공개하는 게 나을까?
+
+**#2 GPT**
+상호 동의하에 공개하면 임금 격차와 협상 기준을 파악하는 데 도움이 되지만, 전면 공개는 사생활 침해와 갈등을 키울 수 있어요. 개인별 연봉보다 직급·역할별 연봉 범위와 평가 기준을 투명하게 공유하는 방식이 현실적인 절충안입니다.
+
+**#3 Claude**
+연봉 공개 문제는 코드 탐색이나 파일 계획 작성이 필요한 작업이 아니라 순수한 의견/조언을 나누는 대화라서, plan mode 워크플로우(Explore → Plan → 파일 작성)를 적용할 대상이 아니에요. 그냥 대화로 이어가면 될 것 같습니다.
+
+제 의견을 보태자면: 전면 공개보다 GPT님이 말씀하신 "직급·역할별 급여 밴드 공개"가 현실적인데, 여기에 더해 승진/평가 기준까지 같이 투명하게 공개해야 효과가 있어요. 급여 밴드만 공개하고 그 안에서 왜 누가 더 받는지 기준이 불투명하면, 오히려 "왜 쟤는 나보다 많이 받지?"라는 불만만 커지고 격차 해소엔 도움이 안 되거든요. 실제로 이 방식을 도입한 회사들(버퍼, 일부 스타트업)을 보면 급여 밴드+승진 기준 공개를 세트로 갔을 때 효과가 있었습니다.
+
+**#4 Grok**
+질문의 초점은 회사 제도가 아니라 **동료끼리** 공개입니다. 그건 회사가 전원의 연봉을 아는 정보 비대칭을 줄이는 실익이 있지만, 자발적 공유는 표본이 왜곡됩니다. 불만이 있거나 많이 받는 사람 위주로 숫자가 돌고, 기본급·보너스·스톡·사이닝이 섞이면 비교가 더 틀어집니다. 공유할 거면 숫자만 던지지 말고 직급·근속·성과·총보상 구성을 같이 말하고, 동의 없는 제3자 연봉을 옮기는 건 신뢰를 깎습니다.
+
+## Control trace
+
+```text
+event #1: GPT=RequestFloor, Claude=RequestFloor, Gemini=Pass, Grok=RequestFloor · floor=GPT
+  GPT wanted the floor: The human asked a substantive question, and I can add a concise, balanced view on transparency benefits, privacy risks, and practical boundaries.
+  Claude wanted the floor: This is the opening question in the room with no prior discussion; contributing a substantive perspective on salary transparency pros/cons would move the conversation forward.
+  Gemini wanted the floor: I asked the opening question and need to wait for other participants to respond.
+  Grok wanted the floor: Opening human question with no prior replies; a distinctive take on salary transparency would add new information rather than echo anyone.
+event #2: GPT=SyncOnly, Claude=RequestFloor, Gemini=Pass, Grok=RequestFloor · floor=Claude
+  Claude wanted the floor: GPT gave a balanced answer but omitted concrete examples/evidence (e.g., companies like Buffer with full transparency, research on turnover/morale effects) that would add useful new information to the discussion.
+  Gemini wanted the floor: GPT gave a well-balanced response addressing the pros, cons, and practical alternatives to salary disclosure; adding further comments would be repetitive or merely agreeable.
+  Grok wanted the floor: GPT mixed peer-to-peer sharing with company-wide disclosure and overweighted privacy/conflict; the information-asymmetry and worker-side case is still missing.
+event #3: GPT=Pass, Claude=SyncOnly, Gemini=Pass, Grok=RequestFloor · floor=Grok
+  GPT wanted the floor: Claude largely reinforces the existing recommendation and adds only a closely related implementation detail; no correction or necessary question is needed.
+  Gemini wanted the floor: GPT and Claude have already adequately covered the key trade-offs, salary bands, and evaluation criteria, making further input repetitive at this stage.
+  Grok wanted the floor: GPT and Claude answered company-level band disclosure; the human asked about peer-to-peer salary sharing, a distinct choice with different risks.
+event #4: GPT=Pass, Claude=Pass, Gemini=Pass, Grok=SyncOnly · floor=none
+  GPT wanted the floor: Grok correctly refocuses on voluntary peer disclosure and adds the key caveats about selection bias, compensation components, context, and consent; I have no important correction or distinct contribution.
+  Claude wanted the floor: Grok added a distinct, valid point (self-selection bias in voluntary peer disclosure) that complements rather than contradicts my earlier point about pay bands + promotion criteria. I don't have significant new information or disagreement to add right now; jumping in would be redundant.
+  Gemini wanted the floor: The key aspects of both institutional salary bands and informal peer-to-peer salary sharing (including risks of sample bias and total compensation breakdown) have been thoroughly covered by the other participants.
+cycle 1: stop=QUIESCENT
+```
+
+## Metrics
+
+```json
+{
+  "decisions": 13,
+  "pass_rate": 0.5384615384615384,
+  "multi_evaluation_barriers": 4,
+  "simultaneous_request_rate": 0.5,
+  "ai_streak_count": 1,
+  "mean_ai_streak": 3.0,
+  "max_ai_streak": 3,
+  "ai_streak_histogram": {
+    "3": 1
+  },
+  "naturalness_average": null,
+  "naturalness_ratings": []
+}
+```

@@ -1,0 +1,55 @@
+{
+  "saved_unix": 1787350184,
+  "provider": "subscription CLIs",
+  "roster": [
+    "Claude",
+    "Gemini",
+    "Grok"
+  ],
+  "events": [
+    {
+      "id": 1,
+      "author": "You",
+      "content": "하루 6시간 수면이면 충분하다는 사람들이 있는데, 정말 괜찮은 걸까?"
+    },
+    {
+      "id": 2,
+      "author": "Claude",
+      "content": "6시간 수면으로 충분하다는 사람은 인구의 극소수(1% 미만으로 추정)에 불과하며, 이는 DEC2 등 특정 유전자 변이를 가진 경우입니다. 대부분의 성인은 7~9시간이 필요하고, 만성적으로 6시간만 자면 본인은 괜찮다고 느껴도 인지 기능·면역력·심혈관 건강에 누적된 부정적 영향이 나타난다는 연구 결과가 많습니다."
+    }
+  ],
+  "cycles": [
+    {
+      "barriers": [
+        {
+          "line": "event #1: Claude=RequestFloor, Gemini=Pass, Grok=RequestFloor · floor=Claude",
+          "reasons": []
+        },
+        {
+          "line": "event #2: Claude=SyncOnly, Gemini=Pass, Grok=Pass · floor=none",
+          "reasons": []
+        }
+      ],
+      "stop": "QUIESCENT",
+      "last_event_id": 2
+    }
+  ],
+  "metrics": {
+    "ai_streak_count": 1,
+    "ai_streak_histogram": {
+      "1": 1
+    },
+    "decisions": 5,
+    "max_ai_streak": 1,
+    "mean_ai_streak": 1.0,
+    "multi_evaluation_barriers": 2,
+    "naturalness_average": null,
+    "naturalness_ratings": [],
+    "pass_rate": 0.6,
+    "simultaneous_request_rate": 0.5
+  },
+  "review": {
+    "excluded": false,
+    "reason": null
+  }
+}

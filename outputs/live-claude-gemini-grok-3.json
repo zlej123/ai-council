@@ -1,0 +1,97 @@
+{
+  "saved_unix": 1787350129,
+  "provider": "subscription CLIs",
+  "roster": [
+    "Claude",
+    "Gemini",
+    "Grok"
+  ],
+  "events": [
+    {
+      "id": 1,
+      "author": "You",
+      "content": "직장인이 월 50만원 투자 원금을 만들려고 부업을 시작한다면 뭐가 현실적일까? AI를 적극 활용한다는 전제야."
+    },
+    {
+      "id": 2,
+      "author": "Claude",
+      "content": "월 50만원 정도의 투자 원금을 만드는 게 목표라면, 코드베이스 작업이 아니라 부업 전략에 대한 조언을 구하시는 것 같습니다. 이 요청은 계획 모드(코드 탐색 및 구현 계획)와는 맞지 않는 주제라서, 바로 답변드리는 게 더 도움이 될 것 같아요.\n\n간단히 몇 가지 현실적인 방향을 제안하자면:\n\n1. **AI 활용 콘텐츠/번역 부업** — ChatGPT/Claude로 블로그 글, 카피라이팅, 번역 초안을 빠르게 만들고 다듬어서 크몽·오투잡 같은 플랫폼에서 판매. 초기엔 시간당 수익이 낮지만 포트폴리오가 쌓이면 월 50만원은 현실적입니다.\n\n2. **AI 기반 디자인/편집 부업** — Midjourney, Canva AI 등으로 SNS 콘텐츠, 유튜브 썸네일, 상세페이지 제작 대행. 수요가 꾸준하고 단가도 나쁘지 않은 편입니다.\n\n3. **AI 코딩 보조 활용 소규모 자동화/웹사이트 제작** — Claude Code 같은 도구로 소상공인 대상 랜딩페이지, 간단한 자동화 스크립트를 만들어주는 프리랜서 작업. 개발 경험이 조금이라도 있다면 진입장벽이 낮아졌습니다.\n\n4. **AI 큐레이션 뉴스레터/콘텐츠 채널** — 특정 니치(예: 반도체, 센서 산업 — 현재 계신 분야와 연관지어도 좋음)를 AI로 요약·정리해 뉴스레터나 블로그 운영, 광고/제휴 수익화.\n\n혹시 본업(반도체/센서 관련)과 연계할 수 있는 부업을 원하시는지, 아니면 완전히 무관한 분야도 괜찮으신지 알려주시면 더 구체적으로 좁혀드릴 수 있습니다."
+    },
+    {
+      "id": 3,
+      "author": "Grok",
+      "content": "현실적인 기준은 “AI로 뭘 만들 수 있나”가 아니라 **퇴근 후 주 8~12시간으로, 첫 고객을 2~4주 안에 받을 수 있느냐**입니다. 블로그·뉴스레터·채널은 월 50만원이 광고/구독으로 나오기까지 보통 몇 달이 걸려서, 직장인 부업의 첫 목표로는 늦습니다. 더 빠른 건 이미 예산이 있는 상대에게 납품하는 일—소상공인 상세페이지/썸네일, 사내 보고서·제안서 초안, 엑셀·반복업무 자동화처럼 **결과물이 돈과 바로 연결되는 한 가지 상품**을 고정가로 파는 쪽입니다. 플랫폼 최저가 경쟁은 피하고, 지인·업종 커뮤니티에서 “이것만 해준다”고 한 줄로 파는 게 시작점입니다."
+    },
+    {
+      "id": 4,
+      "author": "You",
+      "content": "그중 이번 주에 시작할 수 있는 가장 작은 실험 하나만 고르면?"
+    },
+    {
+      "id": 5,
+      "author": "Claude",
+      "content": "소상공인 상세페이지/썸네일 제작을 딱 하나 골라보세요. 이번 주 실험: 주변에서 인스타/블로그 운영하는 사장님 1~2명 찾아 \"AI로 상세페이지 시안 3개 무료로 만들어드릴게요\" 제안하고, 실제로 하루 안에 만들어 전달하는 것까지가 목표입니다. 돈을 받는 게 아니라 \"결과물 완성 + 반응 확인\"이 이번 주의 성공 기준이고, 여기서 나온 피드백으로 고정가 상품(예: \"상세페이지 3안 5만원\")을 다음 주에 제시하면 됩니다."
+    },
+    {
+      "id": 6,
+      "author": "Grok",
+      "content": "무료 시안은 제작 연습이지 실험이 아닙니다. 이번 주 성공 기준은 “잘 만들었나”가 아니라 **이미 이번 주에 마주칠 한 명에게 가격을 말하고 답을 받는 것**입니다. 동료·지인 가게·단골 중 한 곳에 “상세페이지/썸네일 3안, 3만 원, 이틀”이라고만 제안하세요. 거절이든 수락이든 그 한 번의 답이 다음 주 상품을 정합니다."
+    }
+  ],
+  "cycles": [
+    {
+      "barriers": [
+        {
+          "line": "event #1: Claude=RequestFloor, Gemini=RequestFloor, Grok=RequestFloor · floor=Claude",
+          "reasons": []
+        },
+        {
+          "line": "event #2: Claude=SyncOnly, Gemini=Pass, Grok=RequestFloor · floor=Grok",
+          "reasons": []
+        },
+        {
+          "line": "event #3: Claude=Pass, Gemini=Pass, Grok=SyncOnly · floor=none",
+          "reasons": []
+        }
+      ],
+      "stop": "QUIESCENT",
+      "last_event_id": 3
+    },
+    {
+      "barriers": [
+        {
+          "line": "event #4: Claude=RequestFloor, Gemini=RequestFloor, Grok=RequestFloor · floor=Claude",
+          "reasons": []
+        },
+        {
+          "line": "event #5: Claude=SyncOnly, Gemini=Pass, Grok=RequestFloor · floor=Grok",
+          "reasons": []
+        },
+        {
+          "line": "event #6: Claude=Pass, Gemini=Pass, Grok=SyncOnly · floor=none",
+          "reasons": []
+        }
+      ],
+      "stop": "QUIESCENT",
+      "last_event_id": 6
+    }
+  ],
+  "metrics": {
+    "ai_streak_count": 2,
+    "ai_streak_histogram": {
+      "2": 2
+    },
+    "decisions": 14,
+    "max_ai_streak": 2,
+    "mean_ai_streak": 2.0,
+    "multi_evaluation_barriers": 6,
+    "naturalness_average": null,
+    "naturalness_ratings": [],
+    "pass_rate": 0.42857142857142855,
+    "simultaneous_request_rate": 0.3333333333333333
+  },
+  "review": {
+    "excluded": false,
+    "reason": null
+  }
+}
