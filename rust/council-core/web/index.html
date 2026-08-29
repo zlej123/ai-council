@@ -110,6 +110,7 @@
   <span class="meta" id="who"></span>
   <span class="meta" id="file"></span>
   <div class="buttons">
+    <button id="newchat">새 대화</button>
     <button id="history">기록</button>
     <button id="review-btn">리뷰</button>
     <button id="gear">설정</button>
@@ -598,6 +599,10 @@ document.getElementById('review-btn').onclick = () => {
   if (reviewpanel.classList.contains('open')) refreshReview();
 };
 document.getElementById('review-close').onclick = () => reviewpanel.classList.remove('open');
+
+// Same reset the settings drawer offers, reachable without knowing it is there.
+// Keeps the current seat lineup; the confirm in the apply handler still guards.
+document.getElementById('newchat').onclick = () => document.getElementById('apply').click();
 
 // The drawers cover the header buttons that opened them, so they need their own
 // ways out: the 닫기 button, a click outside, or Escape.
