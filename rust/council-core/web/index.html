@@ -210,6 +210,7 @@ const log = document.getElementById('log'), text = document.getElementById('text
       reviewpanel = document.getElementById('reviewpanel'),
       stopBtn = document.getElementById('stop'), target = document.getElementById('target');
 let lastCount = -1, lastCycles = -1, wasBusy = false, viewerFile = null, MODELS = {}, sending = false;
+let deliberating = false;
 
 const SEATS = [
   { id: 'gpt',    name: 'GPT',    models: ['gpt-5.3-codex', 'gpt-5.4'], hint: 'Codex CLI · ChatGPT 구독' },
@@ -292,6 +293,11 @@ function render(s) {
       ? entries.map(([who, st]) => '<span class="chip ' + esc(st) + '"><b class="who ' + esc(who) + '">' + esc(who) + '</b> ' + esc(st) + '</span>').join('')
       : '카운슬 심의 중…';
   }
+  // A finished deliberation the user is not looking at becomes a system
+  // notification and a title badge; both clear when the page regains focus.
+  if (deliberating && !s.busy) notifyDone(s);
+  deliberating = s.busy;
+
   // Silence looks like a hang, so say whose turn it is. QUIESCENT means
   // nobody requested the floor and the room is waiting for the human;
   // AI_STREAK_LIMIT means the streak guard stopped the AIs.
@@ -326,9 +332,23 @@ function render(s) {
 async function refresh() {
   try { render(await (await fetch('/api/state')).json()); } catch (_) {}
 }
+function notifyDone(s) {
+  if (document.hasFocus()) return;
+  document.title = '● AI Council';
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const last = s.events[s.events.length - 1];
+  const title = s.last_error ? 'AI Council — 오류로 멈췄습니다' : 'AI Council — 심의가 끝났습니다';
+  const body = s.last_error
+    || (last ? last.author + ': ' + last.content.slice(0, 120) : '');
+  const n = new Notification(title, { body, tag: 'council-done' });
+  n.onclick = () => { window.focus(); n.close(); };
+}
+window.addEventListener('focus', () => { document.title = 'AI Council'; });
+
 setInterval(refresh, 1500); refresh();
 
 async function submit() {
+  if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
   const value = text.value.trim();
   if (!value || send.disabled || sending) return;
   sending = true;
