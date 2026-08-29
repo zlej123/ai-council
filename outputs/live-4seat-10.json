@@ -1,29 +1,4 @@
 {
-  "saved_unix": 1787923626,
-  "provider": "subscription CLIs",
-  "roster": [
-    "GPT",
-    "Claude",
-    "Gemini",
-    "Grok"
-  ],
-  "events": [
-    {
-      "id": 1,
-      "author": "You",
-      "content": "SF 소설이 실제 기술 발전에 영향을 준 사례가 있을까?"
-    },
-    {
-      "id": 2,
-      "author": "GPT",
-      "content": "있어. 대표적으로 아서 C. 클라크의 정지궤도 통신위성 구상, 《스타트렉》의 휴대용 통신기에서 영감을 받은 휴대전화, 닐 스티븐슨의 《스노 크래시》가 대중화한 ‘메타버스’ 개념 등이 꼽혀. 다만 SF가 기술을 직접 발명했다기보다, 연구자에게 목표와 인터페이스의 상상도를 제공하고 사회적 수요를 형성한 경우가 많아."
-    },
-    {
-      "id": 3,
-      "author": "Claude",
-      "content": "덧붙이자면, 필립 K. 딕의 작품들이 음성인식·감시기술 논의에 영감을 준 사례나, 윌리엄 깁슨이 '사이버스페이스'라는 용어를 만들어 인터넷 인터페이스 상상에 영향을 준 것도 좋은 예야. 흥미로운 건 이런 사례 대부분이 '예측 적중'이라기보다, 소설이 먼저 제시한 은유와 어휘가 연구자·개발자들의 공통 언어가 되면서 실제 개발 방향에 영향을 준 경우라는 점이야 — 즉 기술을 예언했다기보다 기술이 나아갈 프레임을 미리 만들어준 셈이지."
-    }
-  ],
   "cycles": [
     {
       "barriers": [
@@ -53,8 +28,25 @@
           ]
         }
       ],
-      "stop": "QUIESCENT",
-      "last_event_id": 3
+      "last_event_id": 3,
+      "stop": "QUIESCENT"
+    }
+  ],
+  "events": [
+    {
+      "author": "You",
+      "content": "SF 소설이 실제 기술 발전에 영향을 준 사례가 있을까?",
+      "id": 1
+    },
+    {
+      "author": "GPT",
+      "content": "있어. 대표적으로 아서 C. 클라크의 정지궤도 통신위성 구상, 《스타트렉》의 휴대용 통신기에서 영감을 받은 휴대전화, 닐 스티븐슨의 《스노 크래시》가 대중화한 ‘메타버스’ 개념 등이 꼽혀. 다만 SF가 기술을 직접 발명했다기보다, 연구자에게 목표와 인터페이스의 상상도를 제공하고 사회적 수요를 형성한 경우가 많아.",
+      "id": 2
+    },
+    {
+      "author": "Claude",
+      "content": "덧붙이자면, 필립 K. 딕의 작품들이 음성인식·감시기술 논의에 영감을 준 사례나, 윌리엄 깁슨이 '사이버스페이스'라는 용어를 만들어 인터넷 인터페이스 상상에 영향을 준 것도 좋은 예야. 흥미로운 건 이런 사례 대부분이 '예측 적중'이라기보다, 소설이 먼저 제시한 은유와 어휘가 연구자·개발자들의 공통 언어가 되면서 실제 개발 방향에 영향을 준 경우라는 점이야 — 즉 기술을 예언했다기보다 기술이 나아갈 프레임을 미리 만들어준 셈이지.",
+      "id": 3
     }
   ],
   "metrics": {
@@ -66,13 +58,26 @@
     "max_ai_streak": 2,
     "mean_ai_streak": 2.0,
     "multi_evaluation_barriers": 3,
-    "naturalness_average": null,
-    "naturalness_ratings": [],
+    "naturalness_average": 4.0,
+    "naturalness_ratings": [
+      {
+        "note": null,
+        "score": 4
+      }
+    ],
     "pass_rate": 0.4,
     "simultaneous_request_rate": 0.6666666666666666
   },
+  "provider": "subscription CLIs",
   "review": {
     "excluded": false,
     "reason": null
-  }
+  },
+  "roster": [
+    "GPT",
+    "Claude",
+    "Gemini",
+    "Grok"
+  ],
+  "saved_unix": 1787923626
 }
