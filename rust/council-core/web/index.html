@@ -34,6 +34,8 @@
   #error { display: none; margin: 0 16px; padding: 8px 12px; border-radius: 8px; background: #4a1d1d; border: 1px solid #7f2c2c; font-size: 13px; }
   footer { border-top: 1px solid var(--line); padding: 10px 16px 14px; display: flex; flex-direction: column; gap: 8px; }
   #composer { display: flex; gap: 8px; }
+  #turnhint { display: none; color: var(--dim); font-size: 12.5px; }
+  #turnhint.on { display: block; }
   #target { background: var(--panel); border: 1px solid var(--line); color: var(--text); border-radius: 10px; padding: 0 8px; font: inherit; }
   #text { flex: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; color: var(--text);
           padding: 10px 12px; font: inherit; resize: none; height: 44px; }
@@ -120,7 +122,8 @@
 <div id="error"></div>
 <footer>
   <div id="busy"></div>
-  <div id="composer">
+  <div id="turnhint"></div>
+<div id="composer">
     <select id="target"><option value="">전체에게</option></select>
     <textarea id="text" placeholder="메시지를 입력하고 Enter (Shift+Enter 줄바꿈)"></textarea>
     <button id="send">보내기</button>
@@ -288,6 +291,19 @@ function render(s) {
     busy.innerHTML = entries.length
       ? entries.map(([who, st]) => '<span class="chip ' + esc(st) + '"><b class="who ' + esc(who) + '">' + esc(who) + '</b> ' + esc(st) + '</span>').join('')
       : '카운슬 심의 중…';
+  }
+  // Silence looks like a hang, so say whose turn it is. QUIESCENT means
+  // nobody requested the floor and the room is waiting for the human;
+  // AI_STREAK_LIMIT means the streak guard stopped the AIs.
+  const lastStop = s.cycles.length ? s.cycles[s.cycles.length - 1].stop : null;
+  const hint = document.getElementById('turnhint');
+  hint.classList.toggle('on', !s.busy && !!lastStop);
+  if (!s.busy && lastStop) {
+    hint.textContent =
+      lastStop === 'QUIESCENT' ? '지금은 당신 차례입니다 — 아무도 발언을 요청하지 않았고, 회의가 당신의 발언을 기다립니다.'
+      : lastStop === 'AI_STREAK_LIMIT' ? 'AI 연속발언 상한에 도달해 멈췄습니다 — 당신이 발언하면 이어집니다.'
+      : lastStop === 'CANCELLED' ? '심의가 중단되었습니다 — 커밋된 발언은 유지되며, 당신 발언으로 계속됩니다.'
+      : '';
   }
   // while a POST is in flight, a poll that predates it must not re-enable the composer
   const locked = s.busy || sending;
