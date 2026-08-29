@@ -2,6 +2,7 @@ use std::error::Error;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use council_core::prompts::language_name;
 use council_core::providers::{ProviderKind, build_adapters};
 use council_core::session::SessionRecord;
 use council_core::transcript::{barrier_line, render_session_markdown};
@@ -15,6 +16,7 @@ struct Options {
     once: Option<String>,
     check_providers: bool,
     transcript: Option<PathBuf>,
+    language: Option<String>,
     no_transcript: bool,
 }
 
@@ -40,7 +42,12 @@ impl Options {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let options = parse_options()?;
-    let mut council = build_council(options.provider, &options.agents, options.max_ai_streak)?;
+    let mut council = build_council(
+        options.provider,
+        &options.agents,
+        options.max_ai_streak,
+        options.language.as_deref(),
+    )?;
 
     if options.check_providers {
         println!("Provider authentication and executables are ready; no model was called.");
@@ -177,6 +184,7 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
     let mut once = None;
     let mut check_providers = false;
     let mut transcript = None;
+    let mut language = None;
     let mut no_transcript = false;
     let mut arguments = std::env::args().skip(1);
 
@@ -210,6 +218,15 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
                     arguments.next().ok_or("--transcript needs a file path")?,
                 ));
             }
+            "--language" => {
+                let code = arguments
+                    .next()
+                    .ok_or("--language needs one of ko, en, ja, zh")?;
+                if language_name(&code).is_none() {
+                    return Err("--language needs one of ko, en, ja, zh".into());
+                }
+                language = Some(code);
+            }
             "--no-transcript" => no_transcript = true,
             "--help" | "-h" => {
                 println!(
@@ -229,6 +246,7 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
         check_providers,
         transcript,
         no_transcript,
+        language,
     })
 }
 
@@ -236,8 +254,12 @@ fn build_council(
     mode: ProviderKind,
     agents: &[AgentId],
     max_ai_streak: u64,
+    language: Option<&str>,
 ) -> Result<Council, Box<dyn Error>> {
-    Ok(Council::new(build_adapters(mode, agents)?, max_ai_streak)?)
+    Ok(Council::new(
+        build_adapters(mode, agents, language)?,
+        max_ai_streak,
+    )?)
 }
 
 fn print_outcome(outcome: &CycleOutcome) {

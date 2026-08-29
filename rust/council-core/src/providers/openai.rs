@@ -5,12 +5,13 @@ use serde_json::{Value, json};
 use crate::adapter::{AgentAdapter, CouncilError, CouncilResult};
 use crate::model::{AgentId, Intent, RoomEvent, RoomSnapshot};
 use crate::prompts::{
-    evaluation_input, evaluation_instructions, speaking_input, speaking_instructions,
+    evaluation_input, evaluation_instructions, speaking_input, speaking_instructions_in,
 };
 
 use super::parse_decision;
 
 pub struct OpenAiAdapter {
+    language: Option<String>,
     client: Client,
     api_key: String,
     model: String,
@@ -25,6 +26,7 @@ impl OpenAiAdapter {
         let base_url = std::env::var("OPENAI_BASE_URL")
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_owned());
         Ok(Self {
+            language: None,
             client: Client::new(),
             api_key,
             model,
@@ -53,6 +55,13 @@ impl OpenAiAdapter {
             ));
         }
         Ok(value)
+    }
+}
+
+impl OpenAiAdapter {
+    pub fn with_language(mut self, language: Option<String>) -> Self {
+        self.language = language;
+        self
     }
 }
 
@@ -101,7 +110,7 @@ impl AgentAdapter for OpenAiAdapter {
         let body = json!({
             "model": self.model,
             "store": false,
-            "instructions": speaking_instructions(self.id()),
+            "instructions": speaking_instructions_in(self.id(), self.language.as_deref()),
             "input": speaking_input(room),
             "max_output_tokens": 300
         });

@@ -11,6 +11,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use council_core::engine::AgentDisposition;
 use council_core::metrics::MetricsReport;
+use council_core::prompts::language_name;
 use council_core::providers::{
     AgentSpec, ProviderKind, UsageSample, build_adapters_with, check_subscription,
 };
@@ -64,6 +65,7 @@ enum Command {
     Reset {
         seats: Vec<AgentSpec>,
         max_ai_streak: u64,
+        language: Option<String>,
     },
     Resume {
         file: String,
@@ -126,6 +128,7 @@ struct SeatBody {
 struct SessionBody {
     seats: Vec<SeatBody>,
     max_ai_streak: Option<u64>,
+    language: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -211,7 +214,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .map(AgentSpec::defaults)
         .collect();
     let mut council = Council::new(
-        build_adapters_with(provider, &seats, Some(&usage_tx))?,
+        build_adapters_with(provider, &seats, Some(&usage_tx), None)?,
         max_ai_streak,
     )?;
 
@@ -307,6 +310,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tokio::spawn(async move {
         let mut cycles: Vec<CycleOutcome> = Vec::new();
         let mut current_streak = max_ai_streak;
+        let mut current_language: Option<String> = None;
 
         while let Some(command) = command_rx.recv().await {
             match command {
@@ -364,10 +368,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 Command::Reset {
                     seats: next_seats,
                     max_ai_streak,
+                    language,
                 } => {
-                    let rebuilt =
-                        build_council_blocking(provider, next_seats, max_ai_streak, &usage_tx)
-                            .await;
+                    let rebuilt = build_council_blocking(
+                        provider,
+                        next_seats,
+                        max_ai_streak,
+                        language.clone(),
+                        &usage_tx,
+                    )
+                    .await;
+                    current_language = language;
                     let mut ui = council_app.ui.write().await;
                     match rebuilt {
                         Ok(mut next) => {
@@ -386,11 +397,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 Command::Resume { file } => {
                     let loaded = load_session(&council_app.outputs_dir, &file);
                     let rebuilt = match loaded {
-                        Ok((seats, events)) => {
-                            build_council_blocking(provider, seats, current_streak, &usage_tx)
-                                .await
-                                .map(|council| (council, events))
-                        }
+                        Ok((seats, events)) => build_council_blocking(
+                            provider,
+                            seats,
+                            current_streak,
+                            current_language.clone(),
+                            &usage_tx,
+                        )
+                        .await
+                        .map(|council| (council, events)),
                         Err(error) => Err(error),
                     };
                     // Hold the UI lock across install + seed so the seeded
@@ -478,11 +493,12 @@ async fn build_council_blocking(
     provider: ProviderKind,
     seats: Vec<AgentSpec>,
     max_ai_streak: u64,
+    language: Option<String>,
     usage_tx: &mpsc::UnboundedSender<UsageSample>,
 ) -> Result<Council, String> {
     let usage_tx = usage_tx.clone();
     tokio::task::spawn_blocking(move || {
-        build_adapters_with(provider, &seats, Some(&usage_tx))
+        build_adapters_with(provider, &seats, Some(&usage_tx), language.as_deref())
             .and_then(|adapters| Council::new(adapters, max_ai_streak))
             .map_err(|error| error.to_string())
     })
@@ -657,11 +673,22 @@ async fn post_session(
             "a council needs at least two AI participants".to_owned(),
         ));
     }
+    let language = body.language.filter(|value| !value.trim().is_empty());
+    if let Some(code) = language
+        .as_deref()
+        .filter(|code| language_name(code).is_none())
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("unknown language code: {code} (use ko, en, ja, zh)"),
+        ));
+    }
     mark_busy_for_command(&app).await?;
     app.commands
         .send(Command::Reset {
             seats,
             max_ai_streak: body.max_ai_streak.unwrap_or(3),
+            language,
         })
         .await
         .map_err(task_stopped)?;

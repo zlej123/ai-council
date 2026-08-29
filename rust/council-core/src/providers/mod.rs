@@ -77,44 +77,52 @@ impl AgentSpec {
 pub fn build_adapters(
     kind: ProviderKind,
     agents: &[AgentId],
+    language: Option<&str>,
 ) -> CouncilResult<Vec<Arc<dyn AgentAdapter>>> {
     let specs: Vec<AgentSpec> = agents.iter().copied().map(AgentSpec::defaults).collect();
-    build_adapters_with(kind, &specs, None)
+    build_adapters_with(kind, &specs, None, language)
 }
 
 pub fn build_adapters_with(
     kind: ProviderKind,
     specs: &[AgentSpec],
     usage_sink: Option<&tokio::sync::mpsc::UnboundedSender<UsageSample>>,
+    language: Option<&str>,
 ) -> CouncilResult<Vec<Arc<dyn AgentAdapter>>> {
     let roster: Vec<AgentId> = specs.iter().map(|spec| spec.agent).collect();
     let mut adapters: Vec<Arc<dyn AgentAdapter>> = Vec::new();
     for spec in specs {
         let model = spec.model.clone();
         let effort = spec.effort.clone();
+        let speech_language = language.map(str::to_owned);
         let sink = usage_sink.cloned();
-        let adapter: Arc<dyn AgentAdapter> = match (kind, spec.agent) {
-            (ProviderKind::Mock, agent) => Arc::new(MockAdapter::new(agent, &roster)),
-            (ProviderKind::Subscription, AgentId::Gpt) => {
-                Arc::new(CodexCliAdapter::with_config(model, effort, sink)?)
-            }
-            (ProviderKind::Subscription, AgentId::Claude) => {
-                Arc::new(ClaudeCliAdapter::with_config(model, effort, sink)?)
-            }
-            (ProviderKind::Subscription, AgentId::Gemini) => {
-                Arc::new(AntigravityCliAdapter::with_config(model, effort, sink)?)
-            }
-            (ProviderKind::Subscription, AgentId::Grok) => {
-                Arc::new(GrokCliAdapter::with_config(model, effort, sink)?)
-            }
-            (ProviderKind::Live, AgentId::Gpt) => Arc::new(OpenAiAdapter::from_env()?),
-            (ProviderKind::Live, AgentId::Claude) => Arc::new(AnthropicAdapter::from_env()?),
-            (ProviderKind::Live, other) => {
-                return Err(CouncilError::new(format!(
-                    "live (API) mode has no adapter for {other}; use subscription mode"
-                )));
-            }
-        };
+        let adapter: Arc<dyn AgentAdapter> =
+            match (kind, spec.agent) {
+                (ProviderKind::Mock, agent) => Arc::new(MockAdapter::new(agent, &roster)),
+                (ProviderKind::Subscription, AgentId::Gpt) => Arc::new(
+                    CodexCliAdapter::with_config(model, effort, speech_language, sink)?,
+                ),
+                (ProviderKind::Subscription, AgentId::Claude) => Arc::new(
+                    ClaudeCliAdapter::with_config(model, effort, speech_language, sink)?,
+                ),
+                (ProviderKind::Subscription, AgentId::Gemini) => Arc::new(
+                    AntigravityCliAdapter::with_config(model, effort, speech_language, sink)?,
+                ),
+                (ProviderKind::Subscription, AgentId::Grok) => Arc::new(
+                    GrokCliAdapter::with_config(model, effort, speech_language, sink)?,
+                ),
+                (ProviderKind::Live, AgentId::Gpt) => {
+                    Arc::new(OpenAiAdapter::from_env()?.with_language(speech_language))
+                }
+                (ProviderKind::Live, AgentId::Claude) => {
+                    Arc::new(AnthropicAdapter::from_env()?.with_language(speech_language))
+                }
+                (ProviderKind::Live, other) => {
+                    return Err(CouncilError::new(format!(
+                        "live (API) mode has no adapter for {other}; use subscription mode"
+                    )));
+                }
+            };
         adapters.push(adapter);
     }
     Ok(adapters)

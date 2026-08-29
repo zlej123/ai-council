@@ -11,7 +11,7 @@ use tokio::time::timeout;
 use crate::adapter::{AgentAdapter, CouncilError, CouncilResult};
 use crate::model::{AgentId, Intent, RoomEvent, RoomSnapshot};
 use crate::prompts::{
-    evaluation_input, evaluation_instructions, speaking_input, speaking_instructions,
+    evaluation_input, evaluation_instructions, speaking_input, speaking_instructions_in,
 };
 
 use super::{UsageSample, parse_decision};
@@ -54,6 +54,7 @@ const INTENT_SCHEMA: &str = include_str!("../../../../src/intent.schema.json");
 
 pub struct CodexCliAdapter {
     usage_sink: Option<UsageSink>,
+    language: Option<String>,
     binary: String,
     model: Option<String>,
     effort: Option<String>,
@@ -64,12 +65,14 @@ impl CodexCliAdapter {
     pub fn with_config(
         model: Option<String>,
         effort: Option<String>,
+        language: Option<String>,
         usage_sink: Option<UsageSink>,
     ) -> CouncilResult<Self> {
         let binary = cli_binary(AgentId::Gpt);
         verify_codex_subscription(&binary)?;
         Ok(Self {
             usage_sink,
+            language,
             binary,
             model: model.or_else(|| std::env::var("CODEX_SUBSCRIPTION_MODEL").ok()),
             effort: effort.or_else(|| std::env::var("CODEX_SUBSCRIPTION_EFFORT").ok()),
@@ -136,7 +139,7 @@ impl AgentAdapter for CodexCliAdapter {
     async fn speak(&self, room: &RoomSnapshot, _intent: &Intent) -> CouncilResult<String> {
         let prompt = format!(
             "{}\n\n{}",
-            speaking_instructions(self.id()),
+            speaking_instructions_in(self.id(), self.language.as_deref()),
             speaking_input(room)
         );
         non_empty_speech(self.id(), self.invoke(prompt, false).await?)
@@ -145,6 +148,7 @@ impl AgentAdapter for CodexCliAdapter {
 
 pub struct ClaudeCliAdapter {
     usage_sink: Option<UsageSink>,
+    language: Option<String>,
     binary: String,
     model: String,
 }
@@ -155,12 +159,14 @@ impl ClaudeCliAdapter {
     pub fn with_config(
         model: Option<String>,
         _effort: Option<String>,
+        language: Option<String>,
         usage_sink: Option<UsageSink>,
     ) -> CouncilResult<Self> {
         let binary = cli_binary(AgentId::Claude);
         verify_claude_subscription(&binary)?;
         Ok(Self {
             usage_sink,
+            language,
             binary,
             model: model
                 .or_else(|| std::env::var("CLAUDE_SUBSCRIPTION_MODEL").ok())
@@ -238,7 +244,7 @@ impl AgentAdapter for ClaudeCliAdapter {
     async fn speak(&self, room: &RoomSnapshot, _intent: &Intent) -> CouncilResult<String> {
         let message = self
             .invoke(
-                speaking_instructions(self.id()),
+                speaking_instructions_in(self.id(), self.language.as_deref()),
                 speaking_input(room),
                 false,
             )
@@ -249,6 +255,7 @@ impl AgentAdapter for ClaudeCliAdapter {
 
 pub struct GrokCliAdapter {
     usage_sink: Option<UsageSink>,
+    language: Option<String>,
     binary: String,
     model: Option<String>,
     effort: Option<String>,
@@ -258,12 +265,14 @@ impl GrokCliAdapter {
     pub fn with_config(
         model: Option<String>,
         effort: Option<String>,
+        language: Option<String>,
         usage_sink: Option<UsageSink>,
     ) -> CouncilResult<Self> {
         let binary = cli_binary(AgentId::Grok);
         verify_grok_subscription(&binary)?;
         Ok(Self {
             usage_sink,
+            language,
             binary,
             model: model.or_else(|| std::env::var("GROK_SUBSCRIPTION_MODEL").ok()),
             effort: effort.or_else(|| std::env::var("GROK_SUBSCRIPTION_EFFORT").ok()),
@@ -335,7 +344,7 @@ impl AgentAdapter for GrokCliAdapter {
     async fn speak(&self, room: &RoomSnapshot, _intent: &Intent) -> CouncilResult<String> {
         let message = self
             .invoke(
-                speaking_instructions(self.id()),
+                speaking_instructions_in(self.id(), self.language.as_deref()),
                 speaking_input(room),
                 false,
             )
@@ -346,6 +355,7 @@ impl AgentAdapter for GrokCliAdapter {
 
 pub struct AntigravityCliAdapter {
     usage_sink: Option<UsageSink>,
+    language: Option<String>,
     binary: String,
     model: String,
     effort: Option<String>,
@@ -355,12 +365,14 @@ impl AntigravityCliAdapter {
     pub fn with_config(
         model: Option<String>,
         effort: Option<String>,
+        language: Option<String>,
         usage_sink: Option<UsageSink>,
     ) -> CouncilResult<Self> {
         let binary = cli_binary(AgentId::Gemini);
         verify_antigravity_subscription(&binary)?;
         Ok(Self {
             usage_sink,
+            language,
             binary,
             model: model
                 .or_else(|| std::env::var("GEMINI_SUBSCRIPTION_MODEL").ok())
@@ -419,7 +431,7 @@ impl AgentAdapter for AntigravityCliAdapter {
     async fn speak(&self, room: &RoomSnapshot, _intent: &Intent) -> CouncilResult<String> {
         let prompt = format!(
             "{}\n\n{}",
-            speaking_instructions(self.id()),
+            speaking_instructions_in(self.id(), self.language.as_deref()),
             speaking_input(room)
         );
         non_empty_speech(self.id(), self.invoke(prompt, false).await?)

@@ -141,6 +141,13 @@
   <div class="drawer-head"><h2>참가자 구성</h2><button class="drawer-close" data-close="settings">닫기</button></div>
   <div id="seats"></div>
   <div class="opts">AI 연속발언 상한 <input id="streak" type="number" min="1" max="10" value="3"></div>
+  <div class="opts">대화 언어 <select id="lang">
+    <option value="">자동 (입력 언어 따름)</option>
+    <option value="ko">한국어</option>
+    <option value="en">English</option>
+    <option value="ja">日本語</option>
+    <option value="zh">中文</option>
+  </select></div>
   <button id="apply" class="wide">새 세션 시작</button>
   <h2 style="margin-top:18px">세션 예산 (0 = 무제한)</h2>
   <div class="opts">비용 $ <input id="budget-cost" type="number" min="0" step="0.5" value="0">
@@ -439,7 +446,8 @@ document.getElementById('apply').onclick = async () => {
   if (seats.length < 2) { alert('AI를 2명 이상 선택하세요.'); return; }
   if (lastCount > 0 && !confirm('현재 대화를 버리고 새 세션을 시작할까요? (transcript는 저장되어 있음)')) return;
   const res = await fetch('/api/session', { method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ seats, max_ai_streak: +document.getElementById('streak').value || 3 }) });
+    body: JSON.stringify({ seats, max_ai_streak: +document.getElementById('streak').value || 3,
+      language: document.getElementById('lang').value || null }) });
   if (!res.ok) { errBox.style.display = 'block'; errBox.textContent = await res.text(); return; }
   settings.classList.remove('open');
   lastCount = -1; refresh();
