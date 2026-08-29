@@ -141,6 +141,11 @@
   <div class="drawer-head"><h2>참가자 구성</h2><button class="drawer-close" data-close="settings">닫기</button></div>
   <div id="seats"></div>
   <div class="opts">AI 연속발언 상한 <input id="streak" type="number" min="1" max="10" value="3"></div>
+  <div class="opts" style="flex-direction:column;align-items:stretch;gap:4px">
+    <label>작업폴더 (읽기 전용, 절대 경로 — 비우면 없음)</label>
+    <input id="workspace" type="text" placeholder="/Users/me/my-project" style="background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:7px;padding:6px 8px;font-size:12.5px">
+    <div class="hint" style="font-size:11.5px;color:var(--dim)">AI 산출물은 세션마다 outputs/artifacts/&lt;세션&gt;/ 에만 생성됩니다.</div>
+  </div>
   <div class="opts">대화 언어 <select id="lang">
     <option value="">자동 (입력 언어 따름)</option>
     <option value="ko">한국어</option>
@@ -447,7 +452,8 @@ document.getElementById('apply').onclick = async () => {
   if (lastCount > 0 && !confirm('현재 대화를 버리고 새 세션을 시작할까요? (transcript는 저장되어 있음)')) return;
   const res = await fetch('/api/session', { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ seats, max_ai_streak: +document.getElementById('streak').value || 3,
-      language: document.getElementById('lang').value || null }) });
+      language: document.getElementById('lang').value || null,
+      workspace: document.getElementById('workspace').value.trim() || null }) });
   if (!res.ok) { errBox.style.display = 'block'; errBox.textContent = await res.text(); return; }
   settings.classList.remove('open');
   lastCount = -1; refresh();

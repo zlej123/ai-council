@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use council_core::prompts::language_name;
-use council_core::providers::{ProviderKind, build_adapters};
+use council_core::providers::{ProviderKind, SeatEnvironment, build_adapters};
 use council_core::session::SessionRecord;
 use council_core::transcript::{barrier_line, render_session_markdown};
 use council_core::{AgentId, Council, CycleOutcome};
@@ -17,6 +17,8 @@ struct Options {
     check_providers: bool,
     transcript: Option<PathBuf>,
     language: Option<String>,
+    workspace: Option<PathBuf>,
+    tools: bool,
     no_transcript: bool,
 }
 
@@ -46,7 +48,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         options.provider,
         &options.agents,
         options.max_ai_streak,
-        options.language.as_deref(),
+        &options,
     )?;
 
     if options.check_providers {
@@ -185,6 +187,8 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
     let mut check_providers = false;
     let mut transcript = None;
     let mut language = None;
+    let mut workspace = None;
+    let mut tools = false;
     let mut no_transcript = false;
     let mut arguments = std::env::args().skip(1);
 
@@ -227,6 +231,15 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
                 }
                 language = Some(code);
             }
+            "--workspace" => {
+                workspace = Some(PathBuf::from(
+                    arguments
+                        .next()
+                        .ok_or("--workspace needs a directory path")?,
+                ));
+                tools = true;
+            }
+            "--tools" => tools = true,
             "--no-transcript" => no_transcript = true,
             "--help" | "-h" => {
                 println!(
@@ -247,6 +260,8 @@ fn parse_options() -> Result<Options, Box<dyn Error>> {
         transcript,
         no_transcript,
         language,
+        workspace,
+        tools,
     })
 }
 
@@ -254,10 +269,35 @@ fn build_council(
     mode: ProviderKind,
     agents: &[AgentId],
     max_ai_streak: u64,
-    language: Option<&str>,
+    options: &Options,
 ) -> Result<Council, Box<dyn Error>> {
+    let artifacts = if options.tools {
+        let dir = PathBuf::from(format!(
+            "outputs/artifacts-cli-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|since| since.as_secs())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir)?;
+        Some(dir.canonicalize()?)
+    } else {
+        None
+    };
+    if let Some(workspace) = options.workspace.as_ref().filter(|path| !path.is_dir()) {
+        return Err(format!("--workspace is not a directory: {}", workspace.display()).into());
+    }
+    let environment = SeatEnvironment {
+        language: options.language.clone(),
+        workspace: options
+            .workspace
+            .as_ref()
+            .map(|path| path.canonicalize())
+            .transpose()?,
+        artifacts,
+    };
     Ok(Council::new(
-        build_adapters(mode, agents, language)?,
+        build_adapters(mode, agents, &environment)?,
         max_ai_streak,
     )?)
 }

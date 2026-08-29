@@ -10,11 +10,9 @@ use tokio::time::timeout;
 
 use crate::adapter::{AgentAdapter, CouncilError, CouncilResult};
 use crate::model::{AgentId, Intent, RoomEvent, RoomSnapshot};
-use crate::prompts::{
-    evaluation_input, evaluation_instructions, speaking_input, speaking_instructions_in,
-};
+use crate::prompts::{evaluation_input, evaluation_instructions, speaking_input};
 
-use super::{UsageSample, parse_decision};
+use super::{SeatEnvironment, ToolGrant, UsageSample, parse_decision, speak_instructions};
 
 type UsageSink = tokio::sync::mpsc::UnboundedSender<UsageSample>;
 
@@ -50,11 +48,14 @@ fn report_usage(sink: &Option<UsageSink>, agent: AgentId, value: &Value) {
 }
 
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(180);
+/// A speaking turn that may search the web or run requested work needs more
+/// room than a judgement; EXPERIMENT.md §7 accepts minutes-long work turns.
+const TOOL_TURN_TIMEOUT: Duration = Duration::from_secs(420);
 const INTENT_SCHEMA: &str = include_str!("../../../../src/intent.schema.json");
 
 pub struct CodexCliAdapter {
     usage_sink: Option<UsageSink>,
-    language: Option<String>,
+    environment: SeatEnvironment,
     binary: String,
     model: Option<String>,
     effort: Option<String>,
@@ -65,14 +66,14 @@ impl CodexCliAdapter {
     pub fn with_config(
         model: Option<String>,
         effort: Option<String>,
-        language: Option<String>,
+        environment: SeatEnvironment,
         usage_sink: Option<UsageSink>,
     ) -> CouncilResult<Self> {
         let binary = cli_binary(AgentId::Gpt);
         verify_codex_subscription(&binary)?;
         Ok(Self {
             usage_sink,
-            language,
+            environment,
             binary,
             model: model.or_else(|| std::env::var("CODEX_SUBSCRIPTION_MODEL").ok()),
             effort: effort.or_else(|| std::env::var("CODEX_SUBSCRIPTION_EFFORT").ok()),
@@ -83,11 +84,30 @@ impl CodexCliAdapter {
 
     async fn invoke(&self, prompt: String, structured: bool) -> CouncilResult<String> {
         let mut command = Command::new(&self.binary);
+        command.arg("exec").arg("--ephemeral");
+        match (&self.environment.artifacts, structured) {
+            // A tool speak turn: writes are mechanically confined to the
+            // artifacts folder (with the /tmp escape hatches closed) and web
+            // search is on. Codex cannot confine reads to a directory set —
+            // the read boundary is instruction-level only (council rule 10).
+            (Some(artifacts), false) => {
+                command
+                    .arg("--sandbox")
+                    .arg("workspace-write")
+                    .arg("--cd")
+                    .arg(artifacts)
+                    .arg("--config")
+                    .arg("web_search=\"live\"")
+                    .arg("--config")
+                    .arg("sandbox_workspace_write.exclude_slash_tmp=true")
+                    .arg("--config")
+                    .arg("sandbox_workspace_write.exclude_tmpdir_env_var=true");
+            }
+            _ => {
+                command.arg("--sandbox").arg("read-only");
+            }
+        }
         command
-            .arg("exec")
-            .arg("--ephemeral")
-            .arg("--sandbox")
-            .arg("read-only")
             .arg("--skip-git-repo-check")
             .arg("--ignore-user-config")
             .arg("--json");
@@ -104,7 +124,13 @@ impl CodexCliAdapter {
         }
         command.arg("-");
         remove_metered_api_environment(&mut command);
-        let output = run_child(command, prompt, AgentId::Gpt).await?;
+        let output = run_child_within(
+            command,
+            prompt,
+            AgentId::Gpt,
+            turn_limit(&self.environment, structured),
+        )
+        .await?;
         for line in output.lines() {
             if let Ok(event) = serde_json::from_str::<Value>(line)
                 && event.get("type").and_then(Value::as_str) == Some("turn.completed")
@@ -139,7 +165,7 @@ impl AgentAdapter for CodexCliAdapter {
     async fn speak(&self, room: &RoomSnapshot, _intent: &Intent) -> CouncilResult<String> {
         let prompt = format!(
             "{}\n\n{}",
-            speaking_instructions_in(self.id(), self.language.as_deref()),
+            speak_instructions(self.id(), &self.environment, ToolGrant::Full),
             speaking_input(room)
         );
         non_empty_speech(self.id(), self.invoke(prompt, false).await?)
@@ -148,7 +174,7 @@ impl AgentAdapter for CodexCliAdapter {
 
 pub struct ClaudeCliAdapter {
     usage_sink: Option<UsageSink>,
-    language: Option<String>,
+    environment: SeatEnvironment,
     binary: String,
     model: String,
 }
@@ -159,14 +185,14 @@ impl ClaudeCliAdapter {
     pub fn with_config(
         model: Option<String>,
         _effort: Option<String>,
-        language: Option<String>,
+        environment: SeatEnvironment,
         usage_sink: Option<UsageSink>,
     ) -> CouncilResult<Self> {
         let binary = cli_binary(AgentId::Claude);
         verify_claude_subscription(&binary)?;
         Ok(Self {
             usage_sink,
-            language,
+            environment,
             binary,
             model: model
                 .or_else(|| std::env::var("CLAUDE_SUBSCRIPTION_MODEL").ok())
@@ -181,9 +207,30 @@ impl ClaudeCliAdapter {
         structured: bool,
     ) -> CouncilResult<String> {
         let mut command = Command::new(&self.binary);
-        command.args(claude_args(&self.model, &system_prompt, structured));
+        command.args(claude_args(
+            &self.model,
+            &system_prompt,
+            structured,
+            &self.environment,
+        ));
+        // --restricted confines file tools to cwd plus every --add-dir, so the
+        // working directory is part of the boundary.
+        if let (Some(artifacts), false) = (&self.environment.artifacts, structured) {
+            command.current_dir(
+                self.environment
+                    .workspace
+                    .as_deref()
+                    .unwrap_or(artifacts.as_path()),
+            );
+        }
         remove_metered_api_environment(&mut command);
-        let output = run_child(command, prompt, AgentId::Claude).await?;
+        let output = run_child_within(
+            command,
+            prompt,
+            AgentId::Claude,
+            turn_limit(&self.environment, structured),
+        )
+        .await?;
         if let Ok(value) = serde_json::from_str::<Value>(&output) {
             report_usage(&self.usage_sink, AgentId::Claude, &value);
         }
@@ -199,12 +246,42 @@ impl ClaudeCliAdapter {
 /// batch have Claude opening its turn by explaining that the room is not a
 /// codebase and that "plan mode 워크플로우(Explore → Plan → 파일 작성)" does not
 /// apply, which is Claude Code's plan-mode language reaching the transcript.
-fn claude_args(model: &str, system_prompt: &str, structured: bool) -> Vec<String> {
-    let mut args = vec![
-        "--print".to_owned(),
-        "--safe-mode".to_owned(),
-        "--tools".to_owned(),
-        String::new(),
+fn claude_args(
+    model: &str,
+    system_prompt: &str,
+    structured: bool,
+    environment: &SeatEnvironment,
+) -> Vec<String> {
+    let mut args = vec!["--print".to_owned(), "--safe-mode".to_owned()];
+    match (&environment.artifacts, structured) {
+        // A tool speak turn. --restricted draws a mechanical boundary around
+        // cwd (the workspace, or the artifacts dir when no workspace is set)
+        // plus the added artifacts dir; dontAsk denies anything else instead
+        // of hanging on an approval prompt. The write-only-artifacts split is
+        // instruction-level (rule 10): --restricted only offers one combined
+        // read+write boundary. --permission-mode plan is never used — its
+        // framing reached the transcript as speech (see the v1 sessions).
+        (Some(artifacts), false) => {
+            args.push("--restricted".to_owned());
+            if environment.workspace.is_some() {
+                args.push("--add-dir".to_owned());
+                args.push(artifacts.to_string_lossy().into_owned());
+            }
+            args.push("--tools".to_owned());
+            args.push("WebSearch,Read,Grep,Glob,Write".to_owned());
+            args.push("--allowedTools".to_owned());
+            args.push("WebSearch Read Grep Glob Write".to_owned());
+            args.push("--permission-mode".to_owned());
+            args.push("dontAsk".to_owned());
+        }
+        // Judgements and tool-less rooms: no tools at all, so there is
+        // nothing for a permission mode to govern.
+        _ => {
+            args.push("--tools".to_owned());
+            args.push(String::new());
+        }
+    }
+    args.extend([
         "--no-session-persistence".to_owned(),
         "--output-format".to_owned(),
         "json".to_owned(),
@@ -212,7 +289,7 @@ fn claude_args(model: &str, system_prompt: &str, structured: bool) -> Vec<String
         model.to_owned(),
         "--system-prompt".to_owned(),
         system_prompt.to_owned(),
-    ];
+    ]);
     if structured {
         args.push("--json-schema".to_owned());
         args.push(INTENT_SCHEMA.to_owned());
@@ -244,7 +321,7 @@ impl AgentAdapter for ClaudeCliAdapter {
     async fn speak(&self, room: &RoomSnapshot, _intent: &Intent) -> CouncilResult<String> {
         let message = self
             .invoke(
-                speaking_instructions_in(self.id(), self.language.as_deref()),
+                speak_instructions(self.id(), &self.environment, ToolGrant::Full),
                 speaking_input(room),
                 false,
             )
@@ -255,7 +332,7 @@ impl AgentAdapter for ClaudeCliAdapter {
 
 pub struct GrokCliAdapter {
     usage_sink: Option<UsageSink>,
-    language: Option<String>,
+    environment: SeatEnvironment,
     binary: String,
     model: Option<String>,
     effort: Option<String>,
@@ -265,14 +342,18 @@ impl GrokCliAdapter {
     pub fn with_config(
         model: Option<String>,
         effort: Option<String>,
-        language: Option<String>,
+        environment: SeatEnvironment,
         usage_sink: Option<UsageSink>,
     ) -> CouncilResult<Self> {
         let binary = cli_binary(AgentId::Grok);
         verify_grok_subscription(&binary)?;
+        if let Some(artifacts) = &environment.artifacts {
+            write_grok_sandbox_profile(artifacts, environment.workspace.as_deref())
+                .map_err(|error| CouncilError::provider(AgentId::Grok, error))?;
+        }
         Ok(Self {
             usage_sink,
-            language,
+            environment,
             binary,
             model: model.or_else(|| std::env::var("GROK_SUBSCRIPTION_MODEL").ok()),
             effort: effort.or_else(|| std::env::var("GROK_SUBSCRIPTION_EFFORT").ok()),
@@ -296,12 +377,32 @@ impl GrokCliAdapter {
             .arg(rules)
             .arg("--output-format")
             .arg("json")
-            .arg("--permission-mode")
-            .arg("plan")
-            .arg("--no-subagents")
-            .arg("--disable-web-search")
-            .arg("--max-turns")
-            .arg("4");
+            .arg("--no-subagents");
+        match (&self.environment.artifacts, structured) {
+            // A tool speak turn: the kernel sandbox (written by with_config as
+            // <artifacts>/.grok/sandbox.toml) makes the workspace read-only
+            // and the artifacts dir the only writable path — the strongest
+            // confinement of the four seats. bypassPermissions is safe here
+            // because the sandbox, not the permission layer, is the boundary.
+            (Some(artifacts), false) => {
+                command
+                    .arg("--permission-mode")
+                    .arg("bypassPermissions")
+                    .arg("--sandbox")
+                    .arg("council")
+                    .arg("--max-turns")
+                    .arg("6")
+                    .current_dir(artifacts);
+            }
+            _ => {
+                command
+                    .arg("--permission-mode")
+                    .arg("plan")
+                    .arg("--disable-web-search")
+                    .arg("--max-turns")
+                    .arg("4");
+            }
+        }
         if let Some(model) = &self.model {
             command.arg("--model").arg(model);
         }
@@ -312,7 +413,13 @@ impl GrokCliAdapter {
             command.arg("--json-schema").arg(INTENT_SCHEMA);
         }
         remove_metered_api_environment(&mut command);
-        let output = run_child(command, String::new(), AgentId::Grok).await?;
+        let output = run_child_within(
+            command,
+            String::new(),
+            AgentId::Grok,
+            turn_limit(&self.environment, structured),
+        )
+        .await?;
         if let Ok(value) = serde_json::from_str::<Value>(&output) {
             report_usage(&self.usage_sink, AgentId::Grok, &value);
         }
@@ -344,7 +451,7 @@ impl AgentAdapter for GrokCliAdapter {
     async fn speak(&self, room: &RoomSnapshot, _intent: &Intent) -> CouncilResult<String> {
         let message = self
             .invoke(
-                speaking_instructions_in(self.id(), self.language.as_deref()),
+                speak_instructions(self.id(), &self.environment, ToolGrant::Full),
                 speaking_input(room),
                 false,
             )
@@ -355,7 +462,7 @@ impl AgentAdapter for GrokCliAdapter {
 
 pub struct AntigravityCliAdapter {
     usage_sink: Option<UsageSink>,
-    language: Option<String>,
+    environment: SeatEnvironment,
     binary: String,
     model: String,
     effort: Option<String>,
@@ -365,14 +472,14 @@ impl AntigravityCliAdapter {
     pub fn with_config(
         model: Option<String>,
         effort: Option<String>,
-        language: Option<String>,
+        environment: SeatEnvironment,
         usage_sink: Option<UsageSink>,
     ) -> CouncilResult<Self> {
         let binary = cli_binary(AgentId::Gemini);
         verify_antigravity_subscription(&binary)?;
         Ok(Self {
             usage_sink,
-            language,
+            environment,
             binary,
             model: model
                 .or_else(|| std::env::var("GEMINI_SUBSCRIPTION_MODEL").ok())
@@ -398,7 +505,13 @@ impl AntigravityCliAdapter {
             command.arg("--json-schema").arg(INTENT_SCHEMA);
         }
         remove_metered_api_environment(&mut command);
-        let output = run_child(command, String::new(), AgentId::Gemini).await?;
+        let output = run_child_within(
+            command,
+            String::new(),
+            AgentId::Gemini,
+            turn_limit(&self.environment, structured),
+        )
+        .await?;
         if let Ok(value) = serde_json::from_str::<Value>(&output) {
             report_usage(&self.usage_sink, AgentId::Gemini, &value);
         }
@@ -431,14 +544,50 @@ impl AgentAdapter for AntigravityCliAdapter {
     async fn speak(&self, room: &RoomSnapshot, _intent: &Intent) -> CouncilResult<String> {
         let prompt = format!(
             "{}\n\n{}",
-            speaking_instructions_in(self.id(), self.language.as_deref()),
+            speak_instructions(self.id(), &self.environment, ToolGrant::WebOnly),
             speaking_input(room)
         );
         non_empty_speech(self.id(), self.invoke(prompt, false).await?)
     }
 }
 
-async fn run_child(mut command: Command, prompt: String, agent: AgentId) -> CouncilResult<String> {
+/// The per-session Grok sandbox: kernel-enforced, read-only workspace,
+/// writable artifacts. Grok reads `<cwd>/.grok/sandbox.toml`, and the tool
+/// speak turn runs with cwd set to the artifacts dir. The base `strict`
+/// profile keeps /tmp writable no matter what, which is why the artifacts and
+/// workspace folders live under the repo's outputs/, never under /tmp.
+fn write_grok_sandbox_profile(
+    artifacts: &std::path::Path,
+    workspace: Option<&std::path::Path>,
+) -> std::io::Result<()> {
+    let dir = artifacts.join(".grok");
+    std::fs::create_dir_all(&dir)?;
+    let read_only = workspace
+        .map(|path| format!("read_only = [{:?}]\n", path.to_string_lossy()))
+        .unwrap_or_default();
+    let profile = format!(
+        "[profiles.council]\nextends = \"strict\"\n{read_only}read_write = [{:?}]\n",
+        artifacts.to_string_lossy()
+    );
+    std::fs::write(dir.join("sandbox.toml"), profile)
+}
+
+/// Judgements stay on the short limit; a speaking turn in a tool room may
+/// search or do requested work and gets the longer one.
+fn turn_limit(environment: &SeatEnvironment, structured: bool) -> Duration {
+    if !structured && environment.artifacts.is_some() {
+        TOOL_TURN_TIMEOUT
+    } else {
+        PROCESS_TIMEOUT
+    }
+}
+
+async fn run_child_within(
+    mut command: Command,
+    prompt: String,
+    agent: AgentId,
+    limit: Duration,
+) -> CouncilResult<String> {
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -461,9 +610,14 @@ async fn run_child(mut command: Command, prompt: String, agent: AgentId) -> Coun
         .map_err(|error| CouncilError::provider(agent, error))?;
     drop(stdin);
 
-    let output = timeout(PROCESS_TIMEOUT, child.wait_with_output())
+    let output = timeout(limit, child.wait_with_output())
         .await
-        .map_err(|_| CouncilError::provider(agent, "CLI timed out after 180 seconds"))?
+        .map_err(|_| {
+            CouncilError::provider(
+                agent,
+                format!("CLI timed out after {} seconds", limit.as_secs()),
+            )
+        })?
         .map_err(|error| CouncilError::provider(agent, error))?;
     if !output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -691,6 +845,7 @@ fn non_empty_speech(agent: AgentId, message: String) -> CouncilResult<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::SeatEnvironment;
     use super::claude_args;
     use super::{
         parse_antigravity_message, parse_claude_message, parse_codex_message, parse_grok_message,
@@ -746,8 +901,8 @@ mod tests {
     }
 
     #[test]
-    fn the_claude_child_gets_no_tools_and_no_permission_mode() {
-        let args = claude_args("sonnet", "규칙", false);
+    fn a_toolless_claude_child_gets_no_tools_and_no_permission_mode() {
+        let args = claude_args("sonnet", "규칙", false, &SeatEnvironment::default());
 
         // Every tool off, so there is nothing for a permission mode to govern.
         let tools = args
@@ -760,15 +915,64 @@ mod tests {
         assert!(!args.iter().any(|arg| arg == "--permission-mode"));
     }
 
+    fn tool_room() -> SeatEnvironment {
+        SeatEnvironment {
+            language: None,
+            workspace: Some(std::path::PathBuf::from("/Users/x/proj")),
+            artifacts: Some(std::path::PathBuf::from(
+                "/Users/x/repo/outputs/artifacts/s1",
+            )),
+        }
+    }
+
+    #[test]
+    fn a_judgement_in_a_tool_room_still_runs_without_tools() {
+        let args = claude_args("sonnet", "규칙", true, &tool_room());
+
+        let tools = args
+            .iter()
+            .position(|arg| arg == "--tools")
+            .expect("--tools");
+        assert_eq!(args[tools + 1], "");
+        assert!(!args.iter().any(|arg| arg == "--restricted"));
+        assert!(args.iter().any(|arg| arg == "--json-schema"));
+    }
+
+    #[test]
+    fn a_tool_speak_turn_is_restricted_and_never_uses_plan_mode() {
+        let args = claude_args("sonnet", "규칙", false, &tool_room());
+
+        assert!(args.iter().any(|arg| arg == "--restricted"));
+        // The artifacts dir joins the boundary; the workspace is the cwd.
+        let add = args
+            .iter()
+            .position(|arg| arg == "--add-dir")
+            .expect("--add-dir");
+        assert_eq!(args[add + 1], "/Users/x/repo/outputs/artifacts/s1");
+        let mode = args
+            .iter()
+            .position(|arg| arg == "--permission-mode")
+            .expect("--permission-mode");
+        assert_eq!(args[mode + 1], "dontAsk");
+        let tools = args
+            .iter()
+            .position(|arg| arg == "--tools")
+            .expect("--tools");
+        assert_eq!(args[tools + 1], "WebSearch,Read,Grep,Glob,Write");
+        assert!(!args.iter().any(|arg| arg == "plan"));
+        assert!(!args.iter().any(|arg| arg == "--json-schema"));
+    }
+
     #[test]
     fn only_a_judgement_call_pins_the_intent_schema() {
+        let env = SeatEnvironment::default();
         assert!(
-            !claude_args("sonnet", "규칙", false)
+            !claude_args("sonnet", "규칙", false, &env)
                 .iter()
                 .any(|arg| arg == "--json-schema")
         );
         assert!(
-            claude_args("sonnet", "규칙", true)
+            claude_args("sonnet", "규칙", true, &env)
                 .iter()
                 .any(|arg| arg == "--json-schema")
         );

@@ -42,6 +42,38 @@ pub fn language_name(code: &str) -> Option<&'static str> {
     }
 }
 
+/// Names the folders a v2 speaking turn may touch, so the model cites real
+/// paths and the other seats can open them (EXPERIMENT.md §7).
+pub fn tool_context(workspace: Option<&str>, artifacts: &str) -> String {
+    let workspace_line = workspace
+        .map(|path| format!(" Workspace (read-only): {path}."))
+        .unwrap_or_default();
+    format!(
+        " This room grants you tools.{workspace_line} Artifacts (writable): {artifacts}. \
+Web search is allowed. Follow rules 9 and 10: cite URLs and file paths you used, and write \
+only inside the artifacts folder, only when the human asked for that work."
+    )
+}
+
+/// For a seat whose CLI cannot confine file access mechanically: it gets the
+/// web and nothing else, and is told so, so it never claims file work.
+pub fn web_only_tool_context() -> &'static str {
+    " This room grants you web search only. You have no file tools in this turn: \
+cite URLs you used, and never claim to have read or written local files."
+}
+
+pub fn speaking_instructions_with(
+    agent: AgentId,
+    language: Option<&str>,
+    tools: Option<&str>,
+) -> String {
+    format!(
+        "{}{}",
+        speaking_instructions_in(agent, language),
+        tools.unwrap_or_default()
+    )
+}
+
 pub fn speaking_instructions_in(agent: AgentId, language: Option<&str>) -> String {
     let directive = language
         .and_then(language_name)
@@ -85,6 +117,43 @@ mod tests {
         let without = speaking_instructions_in(AgentId::Claude, None);
         assert!(!without.contains("Speak in"));
         assert_eq!(without, speaking_instructions(AgentId::Claude));
+    }
+
+    #[test]
+    fn a_tool_room_tells_the_speaker_its_folders() {
+        let ctx = tool_context(Some("/Users/x/proj"), "/tmp/artifacts-7");
+        assert!(ctx.contains("Workspace (read-only): /Users/x/proj"));
+        assert!(ctx.contains("Artifacts (writable): /tmp/artifacts-7"));
+
+        let speak = speaking_instructions_with(
+            AgentId::Gpt,
+            Some("en"),
+            Some(&tool_context(Some("/Users/x/proj"), "/tmp/artifacts-7")),
+        );
+        assert!(speak.contains("Speak in English"));
+        assert!(speak.contains("Artifacts (writable): /tmp/artifacts-7"));
+    }
+
+    #[test]
+    fn a_room_without_a_workspace_still_names_the_artifacts_folder() {
+        let ctx = tool_context(None, "/tmp/artifacts-7");
+        assert!(!ctx.contains("Workspace"));
+        assert!(ctx.contains("Artifacts (writable): /tmp/artifacts-7"));
+    }
+
+    #[test]
+    fn a_web_only_seat_is_told_it_has_no_file_tools() {
+        let speak =
+            speaking_instructions_with(AgentId::Gemini, None, Some(web_only_tool_context()));
+        assert!(speak.contains("web search only"));
+        assert!(!speak.contains("Artifacts (writable)"));
+    }
+
+    #[test]
+    fn a_toolless_room_adds_no_tool_talk_at_all() {
+        let speak = speaking_instructions_with(AgentId::Gpt, None, None);
+        assert_eq!(speak, speaking_instructions(AgentId::Gpt));
+        assert!(!speak.contains("Artifacts"));
     }
 
     #[test]

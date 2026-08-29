@@ -2,3 +2,4 @@
 .env
 # web UI sessions are working data; git add -f the ones used for quality review
 /outputs/web-session-*
+outputs/artifacts*/

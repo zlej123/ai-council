@@ -13,7 +13,7 @@ use council_core::engine::AgentDisposition;
 use council_core::metrics::MetricsReport;
 use council_core::prompts::language_name;
 use council_core::providers::{
-    AgentSpec, ProviderKind, UsageSample, build_adapters_with, check_subscription,
+    AgentSpec, ProviderKind, SeatEnvironment, UsageSample, build_adapters_with, check_subscription,
 };
 use council_core::review::{self, ReviewAggregate, SessionSummary};
 use council_core::session::{ReviewAnnotation, SessionRecord, UiCycle, UiEvent};
@@ -66,6 +66,7 @@ enum Command {
         seats: Vec<AgentSpec>,
         max_ai_streak: u64,
         language: Option<String>,
+        workspace: Option<PathBuf>,
     },
     Resume {
         file: String,
@@ -129,6 +130,7 @@ struct SessionBody {
     seats: Vec<SeatBody>,
     max_ai_streak: Option<u64>,
     language: Option<String>,
+    workspace: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -213,8 +215,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .copied()
         .map(AgentSpec::defaults)
         .collect();
+    let startup_base = format!("web-session-{}", now_unix());
+    let startup_env = SeatEnvironment {
+        language: None,
+        workspace: None,
+        artifacts: prepare_artifacts_dir(&startup_base).ok(),
+    };
     let mut council = Council::new(
-        build_adapters_with(provider, &seats, Some(&usage_tx), None)?,
+        build_adapters_with(provider, &seats, Some(&usage_tx), &startup_env)?,
         max_ai_streak,
     )?;
 
@@ -311,6 +319,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let mut cycles: Vec<CycleOutcome> = Vec::new();
         let mut current_streak = max_ai_streak;
         let mut current_language: Option<String> = None;
+        let mut current_workspace: Option<PathBuf> = None;
 
         while let Some(command) = command_rx.recv().await {
             match command {
@@ -369,16 +378,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     seats: next_seats,
                     max_ai_streak,
                     language,
+                    workspace,
                 } => {
+                    current_language = language;
+                    current_workspace = workspace;
+                    let next_base = format!("web-session-{}", now_unix());
                     let rebuilt = build_council_blocking(
                         provider,
                         next_seats,
                         max_ai_streak,
-                        language.clone(),
+                        session_environment(&current_language, &current_workspace, &next_base),
                         &usage_tx,
                     )
                     .await;
-                    current_language = language;
                     let mut ui = council_app.ui.write().await;
                     match rebuilt {
                         Ok(mut next) => {
@@ -387,7 +399,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             council = next;
                             cycles.clear();
                             current_streak = max_ai_streak;
-                            session_base = format!("web-session-{}", now_unix());
+                            session_base = next_base;
                             install_council(&mut ui, &council, &session_base, max_ai_streak);
                         }
                         Err(error) => ui.last_error = Some(error),
@@ -396,12 +408,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
                 Command::Resume { file } => {
                     let loaded = load_session(&council_app.outputs_dir, &file);
+                    let next_base = format!("web-session-{}", now_unix());
                     let rebuilt = match loaded {
                         Ok((seats, events)) => build_council_blocking(
                             provider,
                             seats,
                             current_streak,
-                            current_language.clone(),
+                            session_environment(&current_language, &current_workspace, &next_base),
                             &usage_tx,
                         )
                         .await
@@ -418,7 +431,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             next.set_progress_sink(progress_tx.clone());
                             council = next;
                             cycles.clear();
-                            session_base = format!("web-session-{}", now_unix());
+                            session_base = next_base;
                             install_council(&mut ui, &council, &session_base, current_streak);
                             if let Err(error) = council.seed_room(events) {
                                 ui.last_error = Some(error.to_string());
@@ -489,16 +502,40 @@ async fn save_session(
 
 /// Builds adapters (which probe CLI logins with blocking subprocess calls)
 /// off the async runtime.
+/// The session's artifacts folder — the only place a v2 speaking turn may
+/// write. Created fresh per session base under outputs/.
+fn prepare_artifacts_dir(session_base: &str) -> std::io::Result<PathBuf> {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../outputs/artifacts")
+        .join(session_base);
+    std::fs::create_dir_all(&dir)?;
+    dir.canonicalize()
+}
+
+fn session_environment(
+    language: &Option<String>,
+    workspace: &Option<PathBuf>,
+    session_base: &str,
+) -> SeatEnvironment {
+    SeatEnvironment {
+        language: language.clone(),
+        workspace: workspace.clone(),
+        // Failure to create the folder degrades to a tool-less room rather
+        // than blocking the session.
+        artifacts: prepare_artifacts_dir(session_base).ok(),
+    }
+}
+
 async fn build_council_blocking(
     provider: ProviderKind,
     seats: Vec<AgentSpec>,
     max_ai_streak: u64,
-    language: Option<String>,
+    environment: SeatEnvironment,
     usage_tx: &mpsc::UnboundedSender<UsageSample>,
 ) -> Result<Council, String> {
     let usage_tx = usage_tx.clone();
     tokio::task::spawn_blocking(move || {
-        build_adapters_with(provider, &seats, Some(&usage_tx), language.as_deref())
+        build_adapters_with(provider, &seats, Some(&usage_tx), &environment)
             .and_then(|adapters| Council::new(adapters, max_ai_streak))
             .map_err(|error| error.to_string())
     })
@@ -683,12 +720,34 @@ async fn post_session(
             format!("unknown language code: {code} (use ko, en, ja, zh)"),
         ));
     }
+    let workspace = match body.workspace.filter(|value| !value.trim().is_empty()) {
+        Some(path) => {
+            let path = PathBuf::from(path.trim());
+            if !path.is_absolute() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "작업폴더는 절대 경로여야 한다".to_owned(),
+                ));
+            }
+            match path.canonicalize() {
+                Ok(canonical) if canonical.is_dir() => Some(canonical),
+                _ => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        format!("작업폴더를 열 수 없다: {}", path.display()),
+                    ));
+                }
+            }
+        }
+        None => None,
+    };
     mark_busy_for_command(&app).await?;
     app.commands
         .send(Command::Reset {
             seats,
             max_ai_streak: body.max_ai_streak.unwrap_or(3),
             language,
+            workspace,
         })
         .await
         .map_err(task_stopped)?;

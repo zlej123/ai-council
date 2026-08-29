@@ -55,6 +55,16 @@ impl ProviderKind {
     }
 }
 
+/// What a seat's turns are allowed to touch, shared by every seat in the room.
+/// `artifacts: None` means a tool-less (v1-style) room; `Some` turns the v2
+/// speaking-turn tools on, with writes confined to that folder.
+#[derive(Clone, Debug, Default)]
+pub struct SeatEnvironment {
+    pub language: Option<String>,
+    pub workspace: Option<std::path::PathBuf>,
+    pub artifacts: Option<std::path::PathBuf>,
+}
+
 /// One seat request: which agent joins, optionally pinned to a model/effort.
 /// `None` falls back to the seat's *_SUBSCRIPTION_MODEL / _EFFORT env vars.
 #[derive(Clone, Debug)]
@@ -74,48 +84,87 @@ impl AgentSpec {
     }
 }
 
+/// What a seat's CLI can actually be granted this turn. The prompt must match
+/// the runtime exactly: promising tools a child cannot use invites the model
+/// to fake them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ToolGrant {
+    /// No tools at all (mock rooms, API-mode adapters, tool-less sessions).
+    None,
+    /// Web search but no file access (Antigravity: no mechanical confinement
+    /// exists, so file tools are withheld entirely).
+    WebOnly,
+    /// Web search plus the workspace/artifacts folders.
+    Full,
+}
+
+/// The speaking-turn system prompt for a seat in this environment: language
+/// directive plus a tool context that matches what the runtime grants.
+pub(crate) fn speak_instructions(
+    agent: AgentId,
+    environment: &SeatEnvironment,
+    grant: ToolGrant,
+) -> String {
+    let tools = match (grant, environment.artifacts.as_ref()) {
+        (ToolGrant::Full, Some(artifacts)) => Some(crate::prompts::tool_context(
+            environment
+                .workspace
+                .as_ref()
+                .and_then(|path| path.to_str()),
+            &artifacts.to_string_lossy(),
+        )),
+        (ToolGrant::WebOnly, Some(_)) => Some(crate::prompts::web_only_tool_context().to_owned()),
+        _ => None,
+    };
+    crate::prompts::speaking_instructions_with(
+        agent,
+        environment.language.as_deref(),
+        tools.as_deref(),
+    )
+}
+
 pub fn build_adapters(
     kind: ProviderKind,
     agents: &[AgentId],
-    language: Option<&str>,
+    environment: &SeatEnvironment,
 ) -> CouncilResult<Vec<Arc<dyn AgentAdapter>>> {
     let specs: Vec<AgentSpec> = agents.iter().copied().map(AgentSpec::defaults).collect();
-    build_adapters_with(kind, &specs, None, language)
+    build_adapters_with(kind, &specs, None, environment)
 }
 
 pub fn build_adapters_with(
     kind: ProviderKind,
     specs: &[AgentSpec],
     usage_sink: Option<&tokio::sync::mpsc::UnboundedSender<UsageSample>>,
-    language: Option<&str>,
+    environment: &SeatEnvironment,
 ) -> CouncilResult<Vec<Arc<dyn AgentAdapter>>> {
     let roster: Vec<AgentId> = specs.iter().map(|spec| spec.agent).collect();
     let mut adapters: Vec<Arc<dyn AgentAdapter>> = Vec::new();
     for spec in specs {
         let model = spec.model.clone();
         let effort = spec.effort.clone();
-        let speech_language = language.map(str::to_owned);
+        let seat_env = environment.clone();
         let sink = usage_sink.cloned();
         let adapter: Arc<dyn AgentAdapter> =
             match (kind, spec.agent) {
                 (ProviderKind::Mock, agent) => Arc::new(MockAdapter::new(agent, &roster)),
                 (ProviderKind::Subscription, AgentId::Gpt) => Arc::new(
-                    CodexCliAdapter::with_config(model, effort, speech_language, sink)?,
+                    CodexCliAdapter::with_config(model, effort, seat_env.clone(), sink)?,
                 ),
                 (ProviderKind::Subscription, AgentId::Claude) => Arc::new(
-                    ClaudeCliAdapter::with_config(model, effort, speech_language, sink)?,
+                    ClaudeCliAdapter::with_config(model, effort, seat_env.clone(), sink)?,
                 ),
                 (ProviderKind::Subscription, AgentId::Gemini) => Arc::new(
-                    AntigravityCliAdapter::with_config(model, effort, speech_language, sink)?,
+                    AntigravityCliAdapter::with_config(model, effort, seat_env.clone(), sink)?,
                 ),
                 (ProviderKind::Subscription, AgentId::Grok) => Arc::new(
-                    GrokCliAdapter::with_config(model, effort, speech_language, sink)?,
+                    GrokCliAdapter::with_config(model, effort, seat_env.clone(), sink)?,
                 ),
                 (ProviderKind::Live, AgentId::Gpt) => {
-                    Arc::new(OpenAiAdapter::from_env()?.with_language(speech_language))
+                    Arc::new(OpenAiAdapter::from_env()?.with_environment(seat_env))
                 }
                 (ProviderKind::Live, AgentId::Claude) => {
-                    Arc::new(AnthropicAdapter::from_env()?.with_language(speech_language))
+                    Arc::new(AnthropicAdapter::from_env()?.with_environment(seat_env))
                 }
                 (ProviderKind::Live, other) => {
                     return Err(CouncilError::new(format!(

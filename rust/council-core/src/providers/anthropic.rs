@@ -4,14 +4,12 @@ use serde_json::{Value, json};
 
 use crate::adapter::{AgentAdapter, CouncilError, CouncilResult};
 use crate::model::{AgentId, Intent, RoomEvent, RoomSnapshot};
-use crate::prompts::{
-    evaluation_input, evaluation_instructions, speaking_input, speaking_instructions_in,
-};
+use crate::prompts::{evaluation_input, evaluation_instructions, speaking_input};
 
 use super::parse_decision;
 
 pub struct AnthropicAdapter {
-    language: Option<String>,
+    environment: super::SeatEnvironment,
     client: Client,
     api_key: String,
     model: String,
@@ -27,7 +25,7 @@ impl AnthropicAdapter {
         let base_url = std::env::var("ANTHROPIC_BASE_URL")
             .unwrap_or_else(|_| "https://api.anthropic.com/v1".to_owned());
         Ok(Self {
-            language: None,
+            environment: super::SeatEnvironment::default(),
             client: Client::new(),
             api_key,
             model,
@@ -61,8 +59,8 @@ impl AnthropicAdapter {
 }
 
 impl AnthropicAdapter {
-    pub fn with_language(mut self, language: Option<String>) -> Self {
-        self.language = language;
+    pub fn with_environment(mut self, environment: super::SeatEnvironment) -> Self {
+        self.environment = environment;
         self
     }
 }
@@ -92,7 +90,7 @@ impl AgentAdapter for AnthropicAdapter {
         let body = json!({
             "model": self.model,
             "max_tokens": 300,
-            "system": speaking_instructions_in(self.id(), self.language.as_deref()),
+            "system": super::speak_instructions(self.id(), &self.environment, super::ToolGrant::None),
             "messages": [{"role": "user", "content": speaking_input(room)}]
         });
         let response = self.create_message(body).await?;
