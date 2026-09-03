@@ -165,7 +165,7 @@ In the settings panel (top right):
 
 | Item | Status |
 | --- | --- |
-| fmt / clippy (-D warnings) / 34 tests | Passing |
+| fmt / clippy (-D warnings) / 50 tests | Passing |
 | Full mock loop + transcript export | Passing |
 | Subscription auth pre-check (`--check-providers`) | Passing |
 | GPT subscription adapter, real judgement | Passed in a 2026-08-21 Codex session |

@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::adapter::{AgentAdapter, CouncilError, CouncilResult};
 use crate::model::{AgentId, Decision, Intent};
+use crate::prompts::SeatTools;
 
 /// Tokens and cost one CLI call reported, as observed from its JSON output.
 /// This is session-local observation — the CLIs do not expose remaining
@@ -84,18 +85,51 @@ impl AgentSpec {
     }
 }
 
-/// What a seat's CLI can actually be granted this turn. The prompt must match
-/// the runtime exactly: promising tools a child cannot use invites the model
-/// to fake them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ToolGrant {
-    /// No tools at all (mock rooms, API-mode adapters, tool-less sessions).
-    None,
-    /// Web search but no file access (Antigravity: no mechanical confinement
-    /// exists, so file tools are withheld entirely).
-    WebOnly,
-    /// Web search plus the workspace/artifacts folders.
-    Full,
+/// The one place that decides what a seat may do on a speaking turn. Both
+/// the prompt (`speak_instructions`) and each adapter's CLI arguments read
+/// this, so the model is told exactly what the child process can do — the
+/// per-seat table in EXPERIMENT.md §7 is this function in prose.
+///
+/// Only the subscription CLIs run tools. The grant is what each CLI can
+/// CONFINE, not what it could be talked into:
+/// - Codex: web, read (unconfined — the sandbox only gates writes), write and
+///   run inside the artifacts folder (workspace-write, cwd = artifacts).
+/// - Claude: web and read inside a `--restricted` boundary. Write only when
+///   there is no workspace, because that boundary is one combined read+write
+///   set: with a workspace present, a Write tool could reach it. No run —
+///   Bash is not a file tool and `--restricted` would not confine it.
+/// - Gemini (Antigravity): web only. Nothing mechanical confines its file
+///   tools, so none are granted.
+/// - Grok: everything, under a kernel sandbox that marks the workspace
+///   read-only and the artifacts folder writable.
+pub fn seat_tools(kind: ProviderKind, agent: AgentId, environment: &SeatEnvironment) -> SeatTools {
+    if environment.artifacts.is_none() || kind != ProviderKind::Subscription {
+        return SeatTools::NONE;
+    }
+    match agent {
+        AgentId::Gpt => SeatTools {
+            web: true,
+            read: true,
+            write: true,
+            run: true,
+        },
+        AgentId::Claude => SeatTools {
+            web: true,
+            read: true,
+            write: environment.workspace.is_none(),
+            run: false,
+        },
+        AgentId::Gemini => SeatTools {
+            web: true,
+            ..SeatTools::NONE
+        },
+        AgentId::Grok => SeatTools {
+            web: true,
+            read: true,
+            write: true,
+            run: true,
+        },
+    }
 }
 
 /// The speaking-turn system prompt for a seat in this environment: language
@@ -103,23 +137,22 @@ pub(crate) enum ToolGrant {
 pub(crate) fn speak_instructions(
     agent: AgentId,
     environment: &SeatEnvironment,
-    grant: ToolGrant,
+    tools: SeatTools,
 ) -> String {
-    let tools = match (grant, environment.artifacts.as_ref()) {
-        (ToolGrant::Full, Some(artifacts)) => Some(crate::prompts::tool_context(
+    let context = environment.artifacts.as_ref().and_then(|artifacts| {
+        crate::prompts::tool_context(
+            tools,
             environment
                 .workspace
                 .as_ref()
                 .and_then(|path| path.to_str()),
             &artifacts.to_string_lossy(),
-        )),
-        (ToolGrant::WebOnly, Some(_)) => Some(crate::prompts::web_only_tool_context().to_owned()),
-        _ => None,
-    };
+        )
+    });
     crate::prompts::speaking_instructions_with(
         agent,
         environment.language.as_deref(),
-        tools.as_deref(),
+        context.as_deref(),
     )
 }
 

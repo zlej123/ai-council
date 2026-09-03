@@ -90,7 +90,7 @@ impl AgentAdapter for AnthropicAdapter {
         let body = json!({
             "model": self.model,
             "max_tokens": 300,
-            "system": super::speak_instructions(self.id(), &self.environment, super::ToolGrant::None),
+            "system": super::speak_instructions(self.id(), &self.environment, crate::prompts::SeatTools::NONE),
             "messages": [{"role": "user", "content": speaking_input(room)}]
         });
         let response = self.create_message(body).await?;

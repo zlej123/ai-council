@@ -10,9 +10,11 @@ use tokio::time::timeout;
 
 use crate::adapter::{AgentAdapter, CouncilError, CouncilResult};
 use crate::model::{AgentId, Intent, RoomEvent, RoomSnapshot};
-use crate::prompts::{evaluation_input, evaluation_instructions, speaking_input};
+use crate::prompts::{SeatTools, evaluation_input, evaluation_instructions, speaking_input};
 
-use super::{SeatEnvironment, ToolGrant, UsageSample, parse_decision, speak_instructions};
+use super::{
+    ProviderKind, SeatEnvironment, UsageSample, parse_decision, seat_tools, speak_instructions,
+};
 
 type UsageSink = tokio::sync::mpsc::UnboundedSender<UsageSample>;
 
@@ -85,12 +87,17 @@ impl CodexCliAdapter {
     async fn invoke(&self, prompt: String, structured: bool) -> CouncilResult<String> {
         let mut command = Command::new(&self.binary);
         command.arg("exec").arg("--ephemeral");
-        match (&self.environment.artifacts, structured) {
+        let tools = if structured {
+            SeatTools::NONE
+        } else {
+            self.tools()
+        };
+        match (&self.environment.artifacts, tools.write) {
             // A tool speak turn: writes are mechanically confined to the
             // artifacts folder (with the /tmp escape hatches closed) and web
             // search is on. Codex cannot confine reads to a directory set —
             // the read boundary is instruction-level only (council rule 10).
-            (Some(artifacts), false) => {
+            (Some(artifacts), true) => {
                 command
                     .arg("--sandbox")
                     .arg("workspace-write")
@@ -165,7 +172,7 @@ impl AgentAdapter for CodexCliAdapter {
     async fn speak(&self, room: &RoomSnapshot, _intent: &Intent) -> CouncilResult<String> {
         let prompt = format!(
             "{}\n\n{}",
-            speak_instructions(self.id(), &self.environment, ToolGrant::Full),
+            speak_instructions(self.id(), &self.environment, self.tools()),
             speaking_input(room)
         );
         non_empty_speech(self.id(), self.invoke(prompt, false).await?)
@@ -206,16 +213,22 @@ impl ClaudeCliAdapter {
         prompt: String,
         structured: bool,
     ) -> CouncilResult<String> {
+        let tools = if structured {
+            SeatTools::NONE
+        } else {
+            self.tools()
+        };
         let mut command = Command::new(&self.binary);
         command.args(claude_args(
             &self.model,
             &system_prompt,
             structured,
             &self.environment,
+            tools,
         ));
         // --restricted confines file tools to cwd plus every --add-dir, so the
         // working directory is part of the boundary.
-        if let (Some(artifacts), false) = (&self.environment.artifacts, structured) {
+        if let (Some(artifacts), true) = (&self.environment.artifacts, tools.read) {
             command.current_dir(
                 self.environment
                     .workspace
@@ -251,26 +264,39 @@ fn claude_args(
     system_prompt: &str,
     structured: bool,
     environment: &SeatEnvironment,
+    tools: SeatTools,
 ) -> Vec<String> {
     let mut args = vec!["--print".to_owned(), "--safe-mode".to_owned()];
-    match (&environment.artifacts, structured) {
+    match (&environment.artifacts, tools.any()) {
         // A tool speak turn. --restricted draws a mechanical boundary around
         // cwd (the workspace, or the artifacts dir when no workspace is set)
         // plus the added artifacts dir; dontAsk denies anything else instead
-        // of hanging on an approval prompt. The write-only-artifacts split is
-        // instruction-level (rule 10): --restricted only offers one combined
-        // read+write boundary. --permission-mode plan is never used — its
-        // framing reached the transcript as speech (see the v1 sessions).
-        (Some(artifacts), false) => {
+        // of hanging on an approval prompt. That boundary is one combined
+        // read+write set, so `seat_tools` grants Write only when the boundary
+        // is the artifacts folder alone — with a workspace present, the Write
+        // tool is simply not in the list, and the workspace stays read-only by
+        // construction. --permission-mode plan is never used — its framing
+        // reached the transcript as speech (see the v1 sessions).
+        (Some(artifacts), true) => {
+            let mut names: Vec<&str> = Vec::new();
+            if tools.web {
+                names.push("WebSearch");
+            }
+            if tools.read {
+                names.extend(["Read", "Grep", "Glob"]);
+            }
+            if tools.write {
+                names.push("Write");
+            }
             args.push("--restricted".to_owned());
             if environment.workspace.is_some() {
                 args.push("--add-dir".to_owned());
                 args.push(artifacts.to_string_lossy().into_owned());
             }
             args.push("--tools".to_owned());
-            args.push("WebSearch,Read,Grep,Glob,Write".to_owned());
+            args.push(names.join(","));
             args.push("--allowedTools".to_owned());
-            args.push("WebSearch Read Grep Glob Write".to_owned());
+            args.push(names.join(" "));
             args.push("--permission-mode".to_owned());
             args.push("dontAsk".to_owned());
         }
@@ -321,7 +347,7 @@ impl AgentAdapter for ClaudeCliAdapter {
     async fn speak(&self, room: &RoomSnapshot, _intent: &Intent) -> CouncilResult<String> {
         let message = self
             .invoke(
-                speak_instructions(self.id(), &self.environment, ToolGrant::Full),
+                speak_instructions(self.id(), &self.environment, self.tools()),
                 speaking_input(room),
                 false,
             )
@@ -378,13 +404,18 @@ impl GrokCliAdapter {
             .arg("--output-format")
             .arg("json")
             .arg("--no-subagents");
-        match (&self.environment.artifacts, structured) {
+        let tools = if structured {
+            SeatTools::NONE
+        } else {
+            self.tools()
+        };
+        match (&self.environment.artifacts, tools.write) {
             // A tool speak turn: the kernel sandbox (written by with_config as
             // <artifacts>/.grok/sandbox.toml) makes the workspace read-only
             // and the artifacts dir the only writable path — the strongest
             // confinement of the four seats. bypassPermissions is safe here
             // because the sandbox, not the permission layer, is the boundary.
-            (Some(artifacts), false) => {
+            (Some(artifacts), true) => {
                 command
                     .arg("--permission-mode")
                     .arg("bypassPermissions")
@@ -451,7 +482,7 @@ impl AgentAdapter for GrokCliAdapter {
     async fn speak(&self, room: &RoomSnapshot, _intent: &Intent) -> CouncilResult<String> {
         let message = self
             .invoke(
-                speak_instructions(self.id(), &self.environment, ToolGrant::Full),
+                speak_instructions(self.id(), &self.environment, self.tools()),
                 speaking_input(room),
                 false,
             )
@@ -544,7 +575,7 @@ impl AgentAdapter for AntigravityCliAdapter {
     async fn speak(&self, room: &RoomSnapshot, _intent: &Intent) -> CouncilResult<String> {
         let prompt = format!(
             "{}\n\n{}",
-            speak_instructions(self.id(), &self.environment, ToolGrant::WebOnly),
+            speak_instructions(self.id(), &self.environment, self.tools()),
             speaking_input(room)
         );
         non_empty_speech(self.id(), self.invoke(prompt, false).await?)
@@ -571,6 +602,22 @@ fn write_grok_sandbox_profile(
     );
     std::fs::write(dir.join("sandbox.toml"), profile)
 }
+
+/// Each seat's grant comes from the single source in `providers::seat_tools`;
+/// the prompt and the CLI arguments both read it through this method.
+macro_rules! seat_tools_method {
+    ($adapter:ty, $agent:expr) => {
+        impl $adapter {
+            fn tools(&self) -> SeatTools {
+                seat_tools(ProviderKind::Subscription, $agent, &self.environment)
+            }
+        }
+    };
+}
+seat_tools_method!(CodexCliAdapter, AgentId::Gpt);
+seat_tools_method!(ClaudeCliAdapter, AgentId::Claude);
+seat_tools_method!(GrokCliAdapter, AgentId::Grok);
+seat_tools_method!(AntigravityCliAdapter, AgentId::Gemini);
 
 /// Judgements stay on the short limit; a speaking turn in a tool room may
 /// search or do requested work and gets the longer one.
@@ -845,11 +892,12 @@ fn non_empty_speech(agent: AgentId, message: String) -> CouncilResult<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::SeatEnvironment;
     use super::claude_args;
     use super::{
-        parse_antigravity_message, parse_claude_message, parse_codex_message, parse_grok_message,
+        ProviderKind, SeatEnvironment, SeatTools, parse_antigravity_message, parse_claude_message,
+        parse_codex_message, parse_grok_message, seat_tools, speak_instructions,
     };
+    use crate::model::AgentId;
 
     #[test]
     fn parses_codex_jsonl_final_message() {
@@ -902,7 +950,13 @@ mod tests {
 
     #[test]
     fn a_toolless_claude_child_gets_no_tools_and_no_permission_mode() {
-        let args = claude_args("sonnet", "규칙", false, &SeatEnvironment::default());
+        let args = claude_args(
+            "sonnet",
+            "규칙",
+            false,
+            &SeatEnvironment::default(),
+            SeatTools::NONE,
+        );
 
         // Every tool off, so there is nothing for a permission mode to govern.
         let tools = args
@@ -925,9 +979,14 @@ mod tests {
         }
     }
 
+    fn claude_grant(env: &SeatEnvironment) -> SeatTools {
+        seat_tools(ProviderKind::Subscription, AgentId::Claude, env)
+    }
+
     #[test]
     fn a_judgement_in_a_tool_room_still_runs_without_tools() {
-        let args = claude_args("sonnet", "규칙", true, &tool_room());
+        // Judgement turns always pass NONE regardless of the room's grant.
+        let args = claude_args("sonnet", "규칙", true, &tool_room(), SeatTools::NONE);
 
         let tools = args
             .iter()
@@ -940,7 +999,8 @@ mod tests {
 
     #[test]
     fn a_tool_speak_turn_is_restricted_and_never_uses_plan_mode() {
-        let args = claude_args("sonnet", "규칙", false, &tool_room());
+        let env = tool_room();
+        let args = claude_args("sonnet", "규칙", false, &env, claude_grant(&env));
 
         assert!(args.iter().any(|arg| arg == "--restricted"));
         // The artifacts dir joins the boundary; the workspace is the cwd.
@@ -958,21 +1018,106 @@ mod tests {
             .iter()
             .position(|arg| arg == "--tools")
             .expect("--tools");
-        assert_eq!(args[tools + 1], "WebSearch,Read,Grep,Glob,Write");
+        // With a workspace in the boundary, Write is withheld: --restricted
+        // is one combined read+write set, and the workspace must stay
+        // read-only by construction, not by instruction.
+        assert_eq!(args[tools + 1], "WebSearch,Read,Grep,Glob");
         assert!(!args.iter().any(|arg| arg == "plan"));
         assert!(!args.iter().any(|arg| arg == "--json-schema"));
+    }
+
+    #[test]
+    fn without_a_workspace_the_claude_boundary_is_artifacts_only_so_write_is_granted() {
+        let env = SeatEnvironment {
+            language: None,
+            workspace: None,
+            artifacts: Some(std::path::PathBuf::from(
+                "/Users/x/repo/outputs/artifacts/s1",
+            )),
+        };
+        let grant = claude_grant(&env);
+        assert!(grant.write);
+        assert!(!grant.run);
+
+        let args = claude_args("sonnet", "규칙", false, &env, grant);
+        let tools = args
+            .iter()
+            .position(|arg| arg == "--tools")
+            .expect("--tools");
+        assert_eq!(args[tools + 1], "WebSearch,Read,Grep,Glob,Write");
+        // No --add-dir: cwd is the artifacts dir and that is the whole boundary.
+        assert!(!args.iter().any(|arg| arg == "--add-dir"));
+    }
+
+    #[test]
+    fn the_prompt_and_the_arguments_read_the_same_grant() {
+        // The invariant the design leans on: whatever `seat_tools` says is
+        // exactly what the child gets and exactly what the model is told.
+        for env in [tool_room(), SeatEnvironment::default()] {
+            let grant = claude_grant(&env);
+            let args = claude_args("sonnet", "규칙", false, &env, grant);
+            let listed = args
+                .iter()
+                .position(|arg| arg == "--tools")
+                .map(|at| args[at + 1].clone())
+                .expect("--tools");
+            assert_eq!(listed.contains("Write"), grant.write);
+            assert_eq!(listed.contains("WebSearch"), grant.web);
+            assert_eq!(listed.contains("Read"), grant.read);
+
+            let prompt = speak_instructions(AgentId::Claude, &env, grant);
+            assert_eq!(
+                prompt.contains("creating files inside the artifacts folder"),
+                env.artifacts.is_some()
+            );
+            if grant.any() && !grant.write {
+                assert!(prompt.contains("Not granted this turn: creating files"));
+            }
+        }
+    }
+
+    #[test]
+    fn gemini_is_granted_the_web_and_nothing_else() {
+        let grant = seat_tools(ProviderKind::Subscription, AgentId::Gemini, &tool_room());
+        assert_eq!(
+            grant,
+            SeatTools {
+                web: true,
+                ..SeatTools::NONE
+            }
+        );
+        let prompt = speak_instructions(AgentId::Gemini, &tool_room(), grant);
+        assert!(prompt.contains("these tools and no others: web search."));
+    }
+
+    #[test]
+    fn a_toolless_room_grants_nothing_to_anyone() {
+        for agent in AgentId::ORDER {
+            assert_eq!(
+                seat_tools(
+                    ProviderKind::Subscription,
+                    agent,
+                    &SeatEnvironment::default()
+                ),
+                SeatTools::NONE
+            );
+            assert_eq!(
+                seat_tools(ProviderKind::Mock, agent, &tool_room()),
+                SeatTools::NONE
+            );
+        }
     }
 
     #[test]
     fn only_a_judgement_call_pins_the_intent_schema() {
         let env = SeatEnvironment::default();
         assert!(
-            !claude_args("sonnet", "규칙", false, &env)
+            !claude_args("sonnet", "규칙", false, &env, SeatTools::NONE)
                 .iter()
                 .any(|arg| arg == "--json-schema")
         );
         assert!(
-            claude_args("sonnet", "규칙", true, &env)
+            claude_args("sonnet", "규칙", true, &env, SeatTools::NONE)
                 .iter()
                 .any(|arg| arg == "--json-schema")
         );

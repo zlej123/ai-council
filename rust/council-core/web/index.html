@@ -532,7 +532,10 @@ function renderHistogram(box, hist) {
   }
 }
 
-function reviewRow(s) {
+function reviewRow(s, liveFile) {
+  // The session still running is rebuilt on disk after every cycle, so a
+  // rating or exclusion given now would be overwritten; wait for it to end.
+  const isLive = !!liveFile && s.file === liveFile;
   const tr = document.createElement('tr');
   // Dimmed whenever the row does not feed the totals — a reviewer held it out,
   // or it is a mock run, which is a scripted conversation and says nothing
@@ -550,6 +553,11 @@ function reviewRow(s) {
   if (isMock) {
     const badge = document.createElement('span'); badge.className = 'hint';
     badge.textContent = 'mock — 집계 제외';
+    tdTopic.append(badge);
+  }
+  if (isLive) {
+    const badge = document.createElement('span'); badge.className = 'hint';
+    badge.textContent = '진행 중 — 세션이 끝난 뒤 평가';
     tdTopic.append(badge);
   }
 
@@ -572,10 +580,10 @@ function reviewRow(s) {
   const note = document.createElement('input');
   note.type = 'text'; note.className = 'rate-note';
   note.placeholder = '메모 (선택) — 점수를 누르면 함께 저장';
-  note.disabled = isMock;
+  note.disabled = isMock || isLive;
   for (let i = 1; i <= 5; i++) {
     const b = document.createElement('button'); b.textContent = i;
-    b.disabled = isMock;
+    b.disabled = isMock || isLive;
     b.onclick = async () => {
       try {
         const res = await fetch('/api/review/rate', { method: 'POST', headers: { 'content-type': 'application/json' },
@@ -591,8 +599,9 @@ function reviewRow(s) {
   const tdInclude = document.createElement('td');
   const chk = document.createElement('input'); chk.type = 'checkbox';
   chk.checked = !(s.review && s.review.excluded);
-  chk.disabled = isMock;
-  chk.title = isMock ? 'mock 세션은 품질 집계에 들어가지 않는다' : '';
+  chk.disabled = isMock || isLive;
+  chk.title = isMock ? 'mock 세션은 품질 집계에 들어가지 않는다'
+    : isLive ? '진행 중인 세션은 끝난 뒤에 평가한다' : '';
   chk.onchange = async () => {
     const excluded = !chk.checked;
     const reason = excluded ? (prompt('제외 사유 (선택, 그대로 두면 사유 없이 제외)') || null) : null;
@@ -629,7 +638,7 @@ function renderReview(data) {
     tbody.innerHTML = '<tr><td colspan="8" class="hint">저장된 세션이 없다.</td></tr>';
     return;
   }
-  for (const s of sessions) tbody.append(reviewRow(s));
+  for (const s of sessions) tbody.append(reviewRow(s, data.live_file));
 }
 
 async function refreshReview() {
@@ -660,7 +669,7 @@ for (const b of document.querySelectorAll('.drawer-close')) {
   b.onclick = () => document.getElementById(b.dataset.close).classList.remove('open');
 }
 document.addEventListener('click', e => {
-  for (const [drawer, opener] of [[settings, 'gear'], [histdrawer, 'history']]) {
+  for (const [drawer, opener] of [[settings, 'gear'], [histdrawer, 'history'], [reviewpanel, 'review-btn']]) {
     if (drawer.classList.contains('open')
         && !drawer.contains(e.target)
         && !document.getElementById(opener).contains(e.target)) {

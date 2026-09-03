@@ -215,11 +215,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .copied()
         .map(AgentSpec::defaults)
         .collect();
-    let startup_base = format!("web-session-{}", now_unix());
+    // One base for the first session: its artifacts folder (which every seat
+    // is told about) and its transcript name must agree, and the auth probes
+    // inside build_adapters_with can easily take longer than a second.
+    let mut session_base = format!("web-session-{}", now_unix());
     let startup_env = SeatEnvironment {
         language: None,
         workspace: None,
-        artifacts: prepare_artifacts_dir(&startup_base).ok(),
+        artifacts: prepare_artifacts_dir(&session_base).ok(),
     };
     let mut council = Council::new(
         build_adapters_with(provider, &seats, Some(&usage_tx), &startup_env)?,
@@ -229,7 +232,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let outputs_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../outputs");
     std::fs::create_dir_all(&outputs_dir)?;
     let outputs_dir = outputs_dir.canonicalize()?;
-    let mut session_base = format!("web-session-{}", now_unix());
+    // One-time backfill, before any session can be writing: a transcript
+    // saved without a sidecar (older runs, CLI runs) gets one now, and the
+    // review board never has to race a live save for it.
+    import_markdown_transcripts(&outputs_dir);
 
     let mut ui = UiState {
         provider: provider.label().to_owned(),
@@ -481,7 +487,7 @@ async fn save_session(
     let snapshot = council.room().snapshot();
     let metrics = council.metrics_report();
     let markdown = render_session_markdown(provider_label, &snapshot, cycles, &metrics);
-    let record = SessionRecord::from_session(
+    let mut record = SessionRecord::from_session(
         now_unix(),
         provider_label,
         &council
@@ -494,9 +500,17 @@ async fn save_session(
         &metrics,
     );
     let dir = &app.outputs_dir;
+    let sidecar = dir.join(format!("{session_base}.json"));
+    // The review annotation lives only on disk; rebuilding the record from
+    // the live council must not throw a reviewer's exclusion away.
+    if let Ok(existing) = std::fs::read_to_string(&sidecar)
+        && let Ok(prior) = serde_json::from_str::<SessionRecord>(&existing)
+    {
+        record.review = prior.review;
+    }
     let _ = std::fs::write(dir.join(format!("{session_base}.md")), markdown);
     if let Ok(json) = serde_json::to_string_pretty(&record) {
-        let _ = std::fs::write(dir.join(format!("{session_base}.json")), json);
+        let _ = std::fs::write(sidecar, json);
     }
 }
 
@@ -818,6 +832,9 @@ async fn get_session_view(
 struct ReviewBoard {
     sessions: Vec<SessionSummary>,
     aggregate: ReviewAggregate,
+    /// The sidecar of the session still in progress, which the page shows
+    /// but does not let anyone rate or exclude yet.
+    live_file: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -869,10 +886,11 @@ fn import_markdown_transcripts(outputs_dir: &std::path::Path) {
     }
 }
 
-async fn get_review(State(app): State<Arc<App>>) -> Json<ReviewBoard> {
-    import_markdown_transcripts(&app.outputs_dir);
+/// Every sidecar on disk, newest first. Blocking filesystem work — callers
+/// run it off the async runtime.
+fn scan_sessions(outputs_dir: &std::path::Path) -> Vec<SessionSummary> {
     let mut sessions = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&app.outputs_dir) {
+    if let Ok(entries) = std::fs::read_dir(outputs_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             if !name.ends_with(".json") {
@@ -890,10 +908,29 @@ async fn get_review(State(app): State<Arc<App>>) -> Json<ReviewBoard> {
         }
     }
     sessions.sort_by_key(|summary| std::cmp::Reverse(summary.saved_unix));
+    sessions
+}
+
+async fn get_review(State(app): State<Arc<App>>) -> Json<ReviewBoard> {
+    let dir = app.outputs_dir.clone();
+    let sessions = tokio::task::spawn_blocking(move || scan_sessions(&dir))
+        .await
+        .unwrap_or_default();
+    // The session still being written is not reviewable: its sidecar is
+    // rebuilt from the live council after every cycle, so the page must not
+    // offer to rate or exclude it until it has ended.
+    let live_file = app
+        .ui
+        .read()
+        .await
+        .transcript
+        .strip_suffix(".md")
+        .map(|base| format!("{base}.json"));
     let aggregate = review::aggregate(&sessions);
     Json(ReviewBoard {
         sessions,
         aggregate,
+        live_file,
     })
 }
 

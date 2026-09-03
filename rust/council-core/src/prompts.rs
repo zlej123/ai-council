@@ -14,7 +14,9 @@ pub fn evaluation_instructions(agent: AgentId) -> String {
     format!(
         "{COUNCIL_RULES}\nYou are {agent}. Evaluate the newest event after reading the complete transcript. \
 Return only a JSON object. decision must be PASS or REQUEST_FLOOR. reason must be \
-a short internal reason and must not contain a proposed speech. Do not answer the room yet."
+a short internal reason and must not contain a proposed speech. Do not answer the room yet. \
+This judgement turn grants no tools: do not search, read, write, or run anything; decide from \
+the transcript alone."
     )
 }
 
@@ -42,24 +44,73 @@ pub fn language_name(code: &str) -> Option<&'static str> {
     }
 }
 
-/// Names the folders a v2 speaking turn may touch, so the model cites real
-/// paths and the other seats can open them (EXPERIMENT.md §7).
-pub fn tool_context(workspace: Option<&str>, artifacts: &str) -> String {
-    let workspace_line = workspace
-        .map(|path| format!(" Workspace (read-only): {path}."))
-        .unwrap_or_default();
-    format!(
-        " This room grants you tools.{workspace_line} Artifacts (writable): {artifacts}. \
-Web search is allowed. Follow rules 9 and 10: cite URLs and file paths you used, and write \
-only inside the artifacts folder, only when the human asked for that work."
-    )
+/// What one speaking turn may actually do. Derived per seat by
+/// `providers::seat_tools` and consumed by BOTH the prompt and the CLI
+/// arguments, so the model is never told about a capability the child
+/// process does not have, nor denied one it has.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SeatTools {
+    pub web: bool,
+    pub read: bool,
+    pub write: bool,
+    pub run: bool,
 }
 
-/// For a seat whose CLI cannot confine file access mechanically: it gets the
-/// web and nothing else, and is told so, so it never claims file work.
-pub fn web_only_tool_context() -> &'static str {
-    " This room grants you web search only. You have no file tools in this turn: \
-cite URLs you used, and never claim to have read or written local files."
+impl SeatTools {
+    pub const NONE: SeatTools = SeatTools {
+        web: false,
+        read: false,
+        write: false,
+        run: false,
+    };
+
+    pub fn any(self) -> bool {
+        self.web || self.read || self.write || self.run
+    }
+}
+
+/// The exact tool grant for this turn, as the model must understand it
+/// (EXPERIMENT.md §7). `None` when the turn has no tools at all.
+pub fn tool_context(tools: SeatTools, workspace: Option<&str>, artifacts: &str) -> Option<String> {
+    if !tools.any() {
+        return None;
+    }
+    let mut granted = Vec::new();
+    let mut denied = Vec::new();
+    for (on, name) in [
+        (tools.web, "web search"),
+        (
+            tools.read,
+            "reading and searching the workspace and artifacts folders",
+        ),
+        (tools.write, "creating files inside the artifacts folder"),
+        (tools.run, "running code inside the artifacts folder"),
+    ] {
+        if on {
+            granted.push(name);
+        } else {
+            denied.push(name);
+        }
+    }
+    let folders = if tools.read || tools.write || tools.run {
+        let workspace_line = workspace
+            .map(|path| format!(" Workspace (read-only): {path}."))
+            .unwrap_or_default();
+        format!("{workspace_line} Artifacts (writable): {artifacts}.")
+    } else {
+        String::new()
+    };
+    let denied_line = if denied.is_empty() {
+        String::new()
+    } else {
+        format!(" Not granted this turn: {}.", denied.join("; "))
+    };
+    Some(format!(
+        " This turn grants you these tools and no others: {}.{denied_line}{folders} \
+Cite the URLs and file paths you used (rule 9); create or run only what the human asked for \
+(rule 10). Never claim to have used a tool you were not granted.",
+        granted.join("; ")
+    ))
 }
 
 pub fn speaking_instructions_with(
@@ -99,6 +150,13 @@ pub fn speaking_input(room: &RoomSnapshot) -> String {
 mod tests {
     use super::*;
 
+    const FULL: SeatTools = SeatTools {
+        web: true,
+        read: true,
+        write: true,
+        run: true,
+    };
+
     #[test]
     fn known_language_codes_map_to_english_names() {
         assert_eq!(language_name("ko"), Some("Korean"));
@@ -120,40 +178,58 @@ mod tests {
     }
 
     #[test]
-    fn a_tool_room_tells_the_speaker_its_folders() {
-        let ctx = tool_context(Some("/Users/x/proj"), "/tmp/artifacts-7");
+    fn a_full_grant_names_every_tool_and_both_folders() {
+        let ctx = tool_context(FULL, Some("/Users/x/proj"), "/tmp/artifacts-7").expect("ctx");
+        assert!(ctx.contains("web search; reading and searching"));
+        assert!(ctx.contains("running code inside the artifacts folder"));
+        assert!(!ctx.contains("Not granted"));
         assert!(ctx.contains("Workspace (read-only): /Users/x/proj"));
         assert!(ctx.contains("Artifacts (writable): /tmp/artifacts-7"));
 
-        let speak = speaking_instructions_with(
-            AgentId::Gpt,
-            Some("en"),
-            Some(&tool_context(Some("/Users/x/proj"), "/tmp/artifacts-7")),
-        );
+        let speak = speaking_instructions_with(AgentId::Gpt, Some("en"), Some(&ctx));
         assert!(speak.contains("Speak in English"));
         assert!(speak.contains("Artifacts (writable): /tmp/artifacts-7"));
     }
 
     #[test]
-    fn a_room_without_a_workspace_still_names_the_artifacts_folder() {
-        let ctx = tool_context(None, "/tmp/artifacts-7");
-        assert!(!ctx.contains("Workspace"));
-        assert!(ctx.contains("Artifacts (writable): /tmp/artifacts-7"));
+    fn a_partial_grant_lists_what_is_withheld() {
+        let read_only = SeatTools {
+            web: true,
+            read: true,
+            write: false,
+            run: false,
+        };
+        let ctx = tool_context(read_only, Some("/Users/x/proj"), "/tmp/a").expect("ctx");
+        assert!(ctx.contains(
+            "Not granted this turn: creating files inside the artifacts folder; running code"
+        ));
+        assert!(ctx.contains("Workspace (read-only): /Users/x/proj"));
     }
 
     #[test]
-    fn a_web_only_seat_is_told_it_has_no_file_tools() {
-        let speak =
-            speaking_instructions_with(AgentId::Gemini, None, Some(web_only_tool_context()));
-        assert!(speak.contains("web search only"));
-        assert!(!speak.contains("Artifacts (writable)"));
+    fn a_web_only_grant_names_no_folders() {
+        let web = SeatTools {
+            web: true,
+            ..SeatTools::NONE
+        };
+        let ctx = tool_context(web, Some("/Users/x/proj"), "/tmp/a").expect("ctx");
+        assert!(ctx.contains("these tools and no others: web search."));
+        assert!(!ctx.contains("Artifacts (writable)"));
+        assert!(ctx.contains("Not granted this turn: reading"));
     }
 
     #[test]
-    fn a_toolless_room_adds_no_tool_talk_at_all() {
+    fn no_grant_means_no_tool_talk_at_all() {
+        assert_eq!(tool_context(SeatTools::NONE, None, "/tmp/a"), None);
         let speak = speaking_instructions_with(AgentId::Gpt, None, None);
         assert_eq!(speak, speaking_instructions(AgentId::Gpt));
         assert!(!speak.contains("Artifacts"));
+    }
+
+    #[test]
+    fn a_judgement_turn_is_told_it_has_no_tools() {
+        let judge = evaluation_instructions(AgentId::Gemini);
+        assert!(judge.contains("This judgement turn grants no tools"));
     }
 
     #[test]

@@ -272,15 +272,34 @@ fn build_council(
     options: &Options,
 ) -> Result<Council, Box<dyn Error>> {
     let artifacts = if options.tools {
-        let dir = PathBuf::from(format!(
-            "outputs/artifacts-cli-{}",
+        // Beside the transcript, so a CLI session's files sit next to its
+        // record wherever the transcript was pointed — never a cwd-relative
+        // guess.
+        let beside = options
+            .transcript_path()
+            .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| PathBuf::from("outputs"));
+        let dir = beside.join(format!(
+            "artifacts-cli-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|since| since.as_secs())
                 .unwrap_or(0)
         ));
         std::fs::create_dir_all(&dir)?;
-        Some(dir.canonicalize()?)
+        let dir = dir.canonicalize()?;
+        // Grok's base sandbox profile keeps /tmp writable no matter what, so
+        // an artifacts folder under a temp dir would not be a boundary at all.
+        let temp = std::env::temp_dir().canonicalize().unwrap_or_default();
+        if dir.starts_with("/tmp") || dir.starts_with("/private/tmp") || dir.starts_with(&temp) {
+            return Err(format!(
+                "artifacts folder {} is under a temp directory; the Grok sandbox cannot confine writes there — run from, or point --transcript at, a non-temp location",
+                dir.display()
+            )
+            .into());
+        }
+        Some(dir)
     } else {
         None
     };

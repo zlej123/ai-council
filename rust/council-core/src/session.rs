@@ -139,7 +139,11 @@ impl SessionRecord {
             .to_owned();
 
         let events = parse_events(between(markdown, "## Events\n\n", "\n## Control trace")?);
-        let trace = between(markdown, "## Control trace\n\n```text\n", "```\n")?;
+        // The trace is everything up to the metrics heading, closed by the
+        // LAST fence before it: a REQUEST_FLOOR reason is free text and may
+        // itself contain a fenced block, which must not end the section early.
+        let trace_section = between(markdown, "## Control trace\n\n```text\n", "\n## Metrics")?;
+        let trace = &trace_section[..trace_section.rfind("```").unwrap_or(trace_section.len())];
         let cycles = parse_cycles(trace);
         let metrics = serde_json::from_str(between(markdown, "## Metrics\n\n```json\n", "\n```")?)
             .unwrap_or(serde_json::Value::Null);
@@ -173,7 +177,15 @@ fn parse_event_header(line: &str) -> Option<(u64, String)> {
 fn parse_events(section: &str) -> Vec<UiEvent> {
     let mut events: Vec<UiEvent> = Vec::new();
     for line in section.lines() {
-        if let Some((id, author)) = parse_event_header(line) {
+        // Utterances are rendered raw, so a bold line inside one can look
+        // like a header. Event ids are sequential and authors are the human
+        // or a seat; only a line carrying the next id AND a real author opens
+        // a new event. Anything else is content.
+        let expected = events.last().map(|event| event.id + 1).unwrap_or(1);
+        if let Some((id, author)) = parse_event_header(line)
+            && id == expected
+            && (author == "You" || AgentId::ORDER.iter().any(|seat| seat.to_string() == author))
+        {
             events.push(UiEvent {
                 id,
                 author,
@@ -390,6 +402,59 @@ mod tests {
 
         assert_eq!(parsed.events.len(), 1);
         assert_eq!(parsed.events[0].content, long);
+    }
+
+    #[test]
+    fn a_bold_line_inside_an_utterance_is_not_mistaken_for_an_event_header() {
+        let room = RoomSnapshot {
+            events: vec![
+                RoomEvent {
+                    id: 1,
+                    author: Author::You,
+                    content: "결과 정리해줘".to_owned(),
+                },
+                RoomEvent {
+                    id: 2,
+                    author: Author::Agent(AgentId::Claude),
+                    content: "정리했습니다.\n**#3 결과**\n두 번째 문단.".to_owned(),
+                },
+            ],
+        };
+        let markdown = crate::transcript::render_session_markdown(
+            "subscription CLIs",
+            &room,
+            &[],
+            &Metrics::default().report(),
+        );
+
+        let parsed = SessionRecord::from_markdown(&markdown, 1).expect("parsed");
+
+        assert_eq!(parsed.events.len(), 2);
+        assert_eq!(
+            parsed.events[1].content,
+            "정리했습니다.\n**#3 결과**\n두 번째 문단."
+        );
+    }
+
+    #[test]
+    fn a_fenced_block_inside_a_reason_does_not_end_the_control_trace_early() {
+        let (room, mut cycles, metrics) = fixture();
+        cycles[0].barriers[0].reasons.insert(
+            AgentId::Gpt,
+            "saw an error:\n```\npanic at line 3\n```\nworth a correction".to_owned(),
+        );
+        let markdown = crate::transcript::render_session_markdown(
+            "subscription CLIs",
+            &room,
+            &cycles,
+            &metrics.report(),
+        );
+
+        let parsed = SessionRecord::from_markdown(&markdown, 1).expect("parsed");
+
+        assert_eq!(parsed.cycles.len(), 1);
+        assert_eq!(parsed.cycles[0].stop, "QUIESCENT");
+        assert_eq!(parsed.roster, vec!["GPT", "Claude"]);
     }
 
     #[test]

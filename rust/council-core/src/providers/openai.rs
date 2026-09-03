@@ -108,7 +108,7 @@ impl AgentAdapter for OpenAiAdapter {
         let body = json!({
             "model": self.model,
             "store": false,
-            "instructions": super::speak_instructions(self.id(), &self.environment, super::ToolGrant::None),
+            "instructions": super::speak_instructions(self.id(), &self.environment, crate::prompts::SeatTools::NONE),
             "input": speaking_input(room),
             "max_output_tokens": 300
         });
