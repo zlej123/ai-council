@@ -684,6 +684,27 @@ async fn run_child_within(
 }
 
 /// Checks the CLI login for one agent without calling any model.
+/// Login probes shell out to a CLI that may be momentarily unable to answer
+/// (keychain, a config lock held by another instance, a slow first start):
+/// Grok's probe failed at three server starts and passed on the retry each
+/// time. A genuine logout still fails — after the last attempt.
+const AUTH_PROBE_ATTEMPTS: u32 = 3;
+const AUTH_PROBE_BACKOFF: Duration = Duration::from_millis(400);
+
+fn retrying(mut probe: impl FnMut() -> CouncilResult<()>) -> CouncilResult<()> {
+    let mut last = None;
+    for attempt in 1..=AUTH_PROBE_ATTEMPTS {
+        match probe() {
+            Ok(()) => return Ok(()),
+            Err(error) => last = Some(error),
+        }
+        if attempt < AUTH_PROBE_ATTEMPTS {
+            std::thread::sleep(AUTH_PROBE_BACKOFF * attempt);
+        }
+    }
+    Err(last.expect("at least one attempt ran"))
+}
+
 pub fn check_subscription(agent: AgentId) -> CouncilResult<()> {
     let binary = cli_binary(agent);
     match agent {
@@ -695,6 +716,10 @@ pub fn check_subscription(agent: AgentId) -> CouncilResult<()> {
 }
 
 fn verify_codex_subscription(binary: &str) -> CouncilResult<()> {
+    retrying(|| probe_codex_subscription(binary))
+}
+
+fn probe_codex_subscription(binary: &str) -> CouncilResult<()> {
     let mut command = SyncCommand::new(binary);
     command.args(["login", "status"]);
     remove_metered_api_environment_sync(&mut command);
@@ -716,6 +741,10 @@ fn verify_codex_subscription(binary: &str) -> CouncilResult<()> {
 }
 
 fn verify_claude_subscription(binary: &str) -> CouncilResult<()> {
+    retrying(|| probe_claude_subscription(binary))
+}
+
+fn probe_claude_subscription(binary: &str) -> CouncilResult<()> {
     let mut command = SyncCommand::new(binary);
     command.args(["auth", "status", "--json"]);
     remove_metered_api_environment_sync(&mut command);
@@ -740,6 +769,10 @@ fn verify_claude_subscription(binary: &str) -> CouncilResult<()> {
 }
 
 fn verify_grok_subscription(binary: &str) -> CouncilResult<()> {
+    retrying(|| probe_grok_subscription(binary))
+}
+
+fn probe_grok_subscription(binary: &str) -> CouncilResult<()> {
     let mut command = SyncCommand::new(binary);
     command.arg("models");
     remove_metered_api_environment_sync(&mut command);
@@ -761,6 +794,10 @@ fn verify_grok_subscription(binary: &str) -> CouncilResult<()> {
 }
 
 fn verify_antigravity_subscription(binary: &str) -> CouncilResult<()> {
+    retrying(|| probe_antigravity_subscription(binary))
+}
+
+fn probe_antigravity_subscription(binary: &str) -> CouncilResult<()> {
     let mut command = SyncCommand::new(binary);
     command.arg("models");
     remove_metered_api_environment_sync(&mut command);
@@ -897,7 +934,53 @@ mod tests {
         ProviderKind, SeatEnvironment, SeatTools, parse_antigravity_message, parse_claude_message,
         parse_codex_message, parse_grok_message, seat_tools, speak_instructions,
     };
+    use crate::adapter::CouncilError;
     use crate::model::AgentId;
+
+    #[test]
+    fn a_probe_that_recovers_within_the_budget_passes() {
+        let mut calls = 0;
+        let result = super::retrying(|| {
+            calls += 1;
+            if calls < 3 {
+                Err(CouncilError::provider(
+                    AgentId::Grok,
+                    "not logged in (transient)",
+                ))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(result.is_ok());
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn a_probe_that_keeps_failing_reports_the_last_error_after_the_budget() {
+        let mut calls = 0;
+        let result = super::retrying(|| {
+            calls += 1;
+            Err(CouncilError::provider(
+                AgentId::Grok,
+                format!("attempt {calls}"),
+            ))
+        });
+        assert_eq!(calls, super::AUTH_PROBE_ATTEMPTS);
+        assert!(result.unwrap_err().to_string().contains("attempt 3"));
+    }
+
+    #[test]
+    fn a_probe_that_passes_first_time_is_not_repeated() {
+        let mut calls = 0;
+        assert!(
+            super::retrying(|| {
+                calls += 1;
+                Ok(())
+            })
+            .is_ok()
+        );
+        assert_eq!(calls, 1);
+    }
 
     #[test]
     fn parses_codex_jsonl_final_message() {
