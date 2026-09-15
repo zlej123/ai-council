@@ -160,6 +160,26 @@ impl SessionRecord {
     }
 }
 
+/// Writes a transcript or sidecar so that readers only ever see the old file
+/// or the complete new one, never a partial write: the bytes go to a sibling
+/// temp file, which is then renamed over the target (atomic on POSIX within
+/// one filesystem). Both binaries write review copies into the same outputs
+/// folder, and the review board reads them while sessions are still running.
+pub fn write_atomic(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("write_atomic needs a file name"))?
+        .to_string_lossy();
+    // Sibling of the target (same filesystem, so rename is atomic), unique per
+    // process so the CLI and the web binary writing into one outputs folder
+    // never share a temp name.
+    let temp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    std::fs::write(&temp, contents)?;
+    std::fs::rename(&temp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temp);
+    })
+}
+
 /// The slice between two markers, or `None` when the transcript does not have
 /// that section.
 fn between<'a>(text: &'a str, start: &str, end: &str) -> Option<&'a str> {
@@ -460,5 +480,59 @@ mod tests {
     #[test]
     fn text_that_is_not_a_transcript_is_refused() {
         assert!(SessionRecord::from_markdown("# 그냥 메모\n\n내용", 1).is_none());
+    }
+
+    fn scratch_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "council-write-atomic-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    #[test]
+    fn an_atomic_write_replaces_the_file_and_leaves_no_temp_behind() {
+        let dir = scratch_dir("replace");
+        let target = dir.join("web-session-1.json");
+        std::fs::write(&target, "{\"old\":true}").expect("seed");
+
+        write_atomic(&target, "{\"new\":true}").expect("write");
+
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("read"),
+            "{\"new\":true}"
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .expect("list")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "web-session-1.json")
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_atomic_write_creates_a_missing_file() {
+        let dir = scratch_dir("create");
+        let target = dir.join("fresh.md");
+
+        write_atomic(&target, "# Council session transcript\n").expect("write");
+
+        assert!(target.is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_atomic_write_into_a_missing_folder_fails_instead_of_panicking() {
+        let dir = scratch_dir("missing");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(write_atomic(&dir.join("x.json"), "{}").is_err());
     }
 }

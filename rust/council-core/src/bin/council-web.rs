@@ -16,7 +16,7 @@ use council_core::providers::{
     AgentSpec, ProviderKind, SeatEnvironment, UsageSample, build_adapters_with, check_subscription,
 };
 use council_core::review::{self, ReviewAggregate, SessionSummary};
-use council_core::session::{ReviewAnnotation, SessionRecord, UiCycle, UiEvent};
+use council_core::session::{ReviewAnnotation, SessionRecord, UiCycle, UiEvent, write_atomic};
 use council_core::transcript::render_session_markdown;
 use council_core::{AgentId, Author, Council, CycleOutcome, Progress, RoomEvent};
 use serde::{Deserialize, Serialize};
@@ -81,6 +81,19 @@ struct App {
     /// `notify_one` stores a permit so an early stop is never lost.
     cancel: RwLock<Option<Arc<Notify>>>,
     outputs_dir: PathBuf,
+    /// Serialises every read-modify-write of a sidecar: the session loop
+    /// re-saves the live session after each cycle while review-board handlers
+    /// patch ratings and exclusions into the same files. Held only around
+    /// synchronous file work, never across an await.
+    sidecar_lock: std::sync::Mutex<()>,
+}
+
+impl App {
+    fn sidecar_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.sidecar_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
 
 fn metrics_value(council: &Council) -> serde_json::Value {
@@ -260,6 +273,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         commands: command_tx,
         cancel: RwLock::new(None),
         outputs_dir: outputs_dir.clone(),
+        sidecar_lock: std::sync::Mutex::new(()),
     });
 
     // Committed events stream into the UI state as they happen, so the page
@@ -501,6 +515,9 @@ async fn save_session(
     );
     let dir = &app.outputs_dir;
     let sidecar = dir.join(format!("{session_base}.json"));
+    // Under the sidecar lock so a review-board edit cannot slip in between
+    // reading the prior annotation and writing the rebuilt record.
+    let _guard = app.sidecar_guard();
     // The review annotation lives only on disk; rebuilding the record from
     // the live council must not throw a reviewer's exclusion away.
     if let Ok(existing) = std::fs::read_to_string(&sidecar)
@@ -508,9 +525,9 @@ async fn save_session(
     {
         record.review = prior.review;
     }
-    let _ = std::fs::write(dir.join(format!("{session_base}.md")), markdown);
+    let _ = write_atomic(&dir.join(format!("{session_base}.md")), &markdown);
     if let Ok(json) = serde_json::to_string_pretty(&record) {
-        let _ = std::fs::write(sidecar, json);
+        let _ = write_atomic(&sidecar, &json);
     }
 }
 
@@ -881,7 +898,7 @@ fn import_markdown_transcripts(outputs_dir: &std::path::Path) {
             continue;
         };
         if let Ok(json) = serde_json::to_string_pretty(&record) {
-            let _ = std::fs::write(sidecar, json);
+            let _ = write_atomic(&sidecar, &json);
         }
     }
 }
@@ -937,17 +954,16 @@ async fn get_review(State(app): State<Arc<App>>) -> Json<ReviewBoard> {
 /// Edits one sidecar in place. The file is reloaded as raw JSON and only the
 /// touched key is replaced, so a key this binary does not know about survives
 /// the write instead of being dropped by a typed round trip.
-fn edit_sidecar<F>(
-    outputs_dir: &std::path::Path,
-    file: &str,
-    edit: F,
-) -> Result<(), (StatusCode, String)>
+fn edit_sidecar<F>(app: &App, file: &str, edit: F) -> Result<(), (StatusCode, String)>
 where
     F: FnOnce(&mut serde_json::Value) -> Result<(), String>,
 {
     let name =
         safe_session_file(file).ok_or((StatusCode::BAD_REQUEST, "invalid file name".to_owned()))?;
-    let path = outputs_dir.join(&name);
+    let path = app.outputs_dir.join(&name);
+    // The whole read-modify-write happens under the sidecar lock, so two
+    // edits (or an edit and a live re-save) cannot lose each other's change.
+    let _guard = app.sidecar_guard();
     let raw = std::fs::read_to_string(&path)
         .map_err(|error| (StatusCode::NOT_FOUND, error.to_string()))?;
     let mut value: serde_json::Value = serde_json::from_str(&raw)
@@ -955,7 +971,7 @@ where
     edit(&mut value).map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let text = serde_json::to_string_pretty(&value)
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
-    std::fs::write(&path, text)
+    write_atomic(&path, &text)
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
     Ok(())
 }
@@ -964,7 +980,7 @@ async fn post_review_rate(
     State(app): State<Arc<App>>,
     Json(body): Json<ReviewRateBody>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    edit_sidecar(&app.outputs_dir, &body.file, |value| {
+    edit_sidecar(&app, &body.file, |value| {
         let slot = value
             .get_mut("metrics")
             .ok_or_else(|| "sidecar has no metrics".to_owned())?;
@@ -981,7 +997,7 @@ async fn post_review_exclude(
     State(app): State<Arc<App>>,
     Json(body): Json<ReviewExcludeBody>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    edit_sidecar(&app.outputs_dir, &body.file, |value| {
+    edit_sidecar(&app, &body.file, |value| {
         let annotation = ReviewAnnotation {
             excluded: body.excluded,
             reason: body.reason.clone().filter(|text| !text.trim().is_empty()),

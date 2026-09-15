@@ -579,6 +579,7 @@ function reviewRow(s, liveFile) {
   const btns = document.createElement('div'); btns.className = 'rate-btns';
   const note = document.createElement('input');
   note.type = 'text'; note.className = 'rate-note';
+  note.dataset.file = s.file;
   note.placeholder = '메모 (선택) — 점수를 누르면 함께 저장';
   note.disabled = isMock || isLive;
   for (let i = 1; i <= 5; i++) {
@@ -590,6 +591,8 @@ function reviewRow(s, liveFile) {
           body: JSON.stringify({ file: s.file, score: i, note: note.value.trim() || null }) });
         if (!res.ok) { alert(await res.text()); return; }
       } catch (_) { return; }
+      // Saved with the score, so it is no longer a draft to carry over.
+      note.value = '';
       refreshReview();
     };
     btns.append(b);
@@ -618,7 +621,7 @@ function reviewRow(s, liveFile) {
   return tr;
 }
 
-function renderReview(data) {
+function renderReview(data, drafts = {}) {
   const a = data.aggregate || {};
   document.getElementById('rv-natural').textContent = a.naturalness_average == null ? '–' : a.naturalness_average.toFixed(2);
   document.getElementById('rv-natural-sub').textContent = (a.rated_sessions || 0) + '/' + (a.included_sessions || 0) + '개 세션 평가됨';
@@ -639,13 +642,23 @@ function renderReview(data) {
     return;
   }
   for (const s of sessions) tbody.append(reviewRow(s, data.live_file));
+  // Put back what was being typed in other rows before the rebuild.
+  for (const input of tbody.querySelectorAll('.rate-note')) {
+    if (drafts[input.dataset.file] != null) input.value = drafts[input.dataset.file];
+  }
 }
 
 async function refreshReview() {
   const tbody = document.getElementById('review-tbody');
+  // The table is rebuilt wholesale, which would destroy a note the user is
+  // still typing in some other row; snapshot unsaved notes first.
+  const drafts = {};
+  for (const input of tbody.querySelectorAll('.rate-note')) {
+    if (input.value.trim()) drafts[input.dataset.file] = input.value;
+  }
   tbody.innerHTML = '<tr><td colspan="8" class="hint">불러오는 중…</td></tr>';
   try {
-    renderReview(await (await fetch('/api/review')).json());
+    renderReview(await (await fetch('/api/review')).json(), drafts);
   } catch (_) {
     tbody.innerHTML = '<tr><td colspan="8" class="hint">불러오지 못했다.</td></tr>';
   }

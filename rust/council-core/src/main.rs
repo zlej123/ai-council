@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use council_core::prompts::language_name;
 use council_core::providers::{ProviderKind, SeatEnvironment, build_adapters};
-use council_core::session::SessionRecord;
+use council_core::session::{SessionRecord, write_atomic};
 use council_core::transcript::{barrier_line, render_session_markdown};
 use council_core::{AgentId, Council, CycleOutcome};
 use tokio::io::{self, AsyncBufReadExt, BufReader};
@@ -170,7 +170,7 @@ fn save_transcript(
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| std::fs::write(path, markdown));
+        .and_then(|()| write_atomic(path, &markdown));
     match written {
         Ok(()) if announce => println!("Transcript saved to {}", path.display()),
         Ok(()) => {}
@@ -387,7 +387,7 @@ fn save_sidecar(
     let Ok(json) = serde_json::to_string_pretty(&record) else {
         return;
     };
-    if let Err(error) = std::fs::write(markdown_path.with_extension("json"), json) {
+    if let Err(error) = write_atomic(&markdown_path.with_extension("json"), &json) {
         eprintln!("Failed to save session sidecar: {error}");
     }
 }
