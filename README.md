@@ -116,11 +116,15 @@ commit RoomEvent
 
 - `engine.rs` — room commit, barrier, intent invalidation, floor, streak limit
 - `model.rs` — `RoomEvent`, `AgentState`, `Intent`
+- `prompts.rs` — council rules, judgement and speaking instructions, the per-turn tool context
+- `providers/mod.rs` — adapter construction and `seat_tools`, the single per-seat tool grant
 - `providers/openai.rs` — OpenAI Responses API adapter
 - `providers/anthropic.rs` — Claude Messages API adapter
 - `providers/mock.rs` — free deterministic protocol demo
-- `providers/subscription.rs` — ChatGPT / Claude / Grok / Antigravity subscription-login CLI adapters
+- `providers/subscription.rs` — ChatGPT / Claude / Grok / Antigravity subscription-login CLI adapters, with each seat's sandboxing
 - `metrics.rs` — PASS rate, simultaneous REQUEST rate, AI streaks, human ratings
+- `session.rs` — the JSON sidecar next to each transcript, Markdown import, atomic writes
+- `review.rs` — cross-session aggregation, late ratings, exclusions
 - `tests/protocol.rs` — core protocol invariants
 
 ## Verification
@@ -153,6 +157,9 @@ In the conversation view:
 - **Directed utterances** — instead of addressing everyone, pick a specific AI and the first floor of that cycle goes to it (an extension of the "the human has priority" rule in EXPERIMENT.md §4).
 - **Interrupt** — stop an in-flight deliberation. The cycle is recorded as `CANCELLED`, already-committed utterances are kept, and the round-robin cursor advances only for AIs that actually spoke.
 - **History** — browse past sessions (JSON sidecars) and use "continue this conversation" to seed a new room **with the participant lineup exactly as it was stored**.
+- **Turn hint** — when the room goes quiet, the composer says why: `QUIESCENT` means nobody asked for the floor and it is your turn; `AI_STREAK_LIMIT` and `CANCELLED` are named too.
+- **Notifications** — a deliberation that finishes while the tab is unfocused posts a system notification and badges the tab title; permission is asked on your first send.
+- **새 대화** (header) — starts a fresh room with the current lineup; the previous one is already saved.
 
 In the settings panel (top right):
 
@@ -160,17 +167,47 @@ In the settings panel (top right):
 - **Participants, models, and effort** are chosen per seat, along with the AI consecutive-turn limit; **Start new session** applies them (the previous conversation is kept as a transcript and the room is reset).
 - **Session budget** — set a cost ($) or token ceiling and new utterances are refused once it is reached (0 = unlimited).
 - **This session's usage** — calls, input/output tokens, and CLI-reported cost, accumulated per AI. Remaining subscription quota is not shown because the CLIs do not expose it headlessly — hitting a limit surfaces as a fail-closed error, and the error text carries the reset time.
+- **Speech language** — 자동 / 한국어 / English / 日本語 / 中文, applied on the next session; the AIs answer in it whatever language you type.
+- **Workspace** — an absolute path the seats may read during speaking turns; see the v2 section below.
 
-## Verification status (2026-08-28)
+### Review board
+
+The **리뷰** button opens the board that EXPERIMENT.md §6 is judged on: every saved session in `outputs/` in one table (topic, roster, PASS rate, simultaneous REQUEST rate, streaks, rating) under totals that recombine the counts rather than average the per-session rates. Each row takes a 1–5 naturalness score with an optional note, and an include toggle that holds a session out of the totals — use it for a contaminated session, such as an AI answering in its coding-agent persona. Mock sessions never count. The session still running is shown but locked until it ends. Ratings land in the same list the CLI's `/rate` writes to, so a topic has one rating history wherever it was scored. Markdown transcripts without a JSON sidecar are imported once at startup, so CLI sessions appear on the board too.
+
+### Keeping the server up
+
+The server lives as long as its process. To keep it running after the terminal closes:
+
+```bash
+nohup cargo run --manifest-path rust/Cargo.toml -p council-core --bin council-web > /dev/null 2>&1 &
+```
+
+## Working council (v2): tools on speaking turns
+
+EXPERIMENT.md §7 extends the contract. Judgement turns stay tool-free, but a speaking turn in a *tool room* may search the web, read the room's folders, and — only on the human's explicit request — create files or run code, confined to a per-session artifacts folder. The grant is per seat, limited to what each CLI can confine mechanically, and defined once in `providers::seat_tools`; the prompt and the CLI arguments both read it, so a seat is never told about a tool it does not have (or denied one it has).
+
+| Seat | Web | Read | Create files | Run code | Confinement |
+| --- | --- | --- | --- | --- | --- |
+| GPT (Codex) | ○ | ○ — whole disk; reads cannot be confined, so a rule is all that limits them | ○ | ○ | writes and execution sandboxed to the artifacts folder |
+| Claude | ○ | ○ | only without a workspace | × | `--restricted` draws one combined read+write boundary; with a workspace set, Write is withheld so the workspace stays read-only by construction |
+| Gemini (Antigravity) | ○ | × | × | × | no mechanical confinement exists, so no file tools are granted |
+| Grok | ○ | ○ | ○ | ○ | kernel sandbox: workspace read-only, artifacts writable |
+
+The web UI turns tools on for every session (artifacts under `outputs/artifacts/<session>/`); set a read-only **workspace** in the settings panel to let seats read your files. The CLI needs `--tools` (or `--workspace PATH`, which implies it); `--language ko|en|ja|zh` fixes the speech language in both.
+
+Know before you use it: a tool speaking turn can take one to three minutes and spends noticeably more subscription quota than a plain turn (its timeout is 420s instead of 180s); the Codex seat can read anywhere on disk in a tool room; and the artifacts folder must not sit under a temp directory, because Grok's base sandbox keeps /tmp writable — the CLI refuses to start tools there. As of 2026-09-15 no saved session has exercised file creation or code execution; the only tool run so far is a web-search smoke test.
+
+## Verification status (2026-09-15)
 
 | Item | Status |
 | --- | --- |
-| fmt / clippy (-D warnings) / 50 tests | Passing |
+| fmt / clippy (-D warnings) / 56 tests | Passing |
 | Full mock loop + transcript export | Passing |
-| Subscription auth pre-check (`--check-providers`) | Passing |
+| Subscription auth pre-check (`--check-providers`) | Passing — probes retry up to three times on a transient CLI failure |
 | GPT subscription adapter, real judgement | Passed in a 2026-08-21 Codex session |
 | Claude subscription adapter evaluate/speak | Passed on 2026-08-21 with real CLI calls (`structured_output` judgement + natural-language speech) |
 | Barrier fail-closed (real provider error) | Passing — confirmed no floor granted when GPT hit its quota |
-| Four-seat GPT + Claude + Gemini + Grok sessions | Passing — 10 topics run on 2026-08-28 |
-| Review board over the saved sessions | Passing — 14 sessions, 163 judgements aggregated |
-| Conversation-quality acceptance (10 topics + `/rate`) | **Pending** — transcripts are ready; the naturalness scores are a human's to give and are not filled in |
+| Four-seat GPT + Claude + Gemini + Grok sessions | 10 topics run on 2026-08-28 |
+| Review board over the saved sessions | 18 real sessions, 221 judgements aggregated (PASS 47.5%, simultaneous REQUEST 42.7%) |
+| Conversation-quality acceptance (§6: 10 topics rated) | **Pending** — 5 of 10 rated so far (average 4.2). Three sessions with a known coding-agent persona leak are not yet excluded, so the totals above are contaminated |
+| Rule 8 (let the human react first) and the v2 tool grants | **Unobserved** — added 2026-08-29; no saved session has run under them yet |
